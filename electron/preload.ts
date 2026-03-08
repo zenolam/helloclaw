@@ -1,0 +1,38 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+  onMainProcessMessage: (callback: (message: string) => void) => {
+    ipcRenderer.on('main-process-message', (_event, message) => callback(message))
+  },
+
+  // ─── Instances (SQLite via main process) ──────────────────────────────────
+  instances: {
+    list: (): Promise<import('../src/store/instances').Instance[]> =>
+      ipcRenderer.invoke('instances:list'),
+
+    add: (instance: {
+      id: string; name: string; url: string; token?: string;
+      password?: string; useProxy?: boolean; status: string; createdAt: number
+    }): Promise<void> =>
+      ipcRenderer.invoke('instances:add', instance),
+
+    update: (id: string, updates: {
+      name?: string; url?: string; token?: string;
+      password?: string; useProxy?: boolean; status?: string
+    }): Promise<void> =>
+      ipcRenderer.invoke('instances:update', id, updates),
+
+    remove: (id: string): Promise<void> =>
+      ipcRenderer.invoke('instances:remove', id),
+  },
+
+  // ─── Settings (SQLite via main process) ───────────────────────────────────
+  settings: {
+    get: (key: string): Promise<string | null> =>
+      ipcRenderer.invoke('settings:get', key),
+
+    set: (key: string, value: string): Promise<void> =>
+      ipcRenderer.invoke('settings:set', key, value),
+  },
+})
