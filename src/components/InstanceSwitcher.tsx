@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronsUpDown, Plus, Check, Circle, Pencil, Trash2, X, Loader2 } from 'lucide-react'
+import { ChevronsUpDown, Plus, Check, Circle, Pencil, Trash2, X, Loader2, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Instance, InstanceStatus } from '@/store/instances'
 import type { ConnectionConfig } from '@/store/connection'
@@ -11,6 +11,7 @@ type InstanceSwitcherProps = {
   onAdd: (name: string, config: ConnectionConfig) => Promise<Instance>
   onUpdate: (id: string, updates: Partial<Pick<Instance, 'name' | 'config'>>) => void
   onRemove: (id: string) => void
+  onDisconnect?: () => void
 }
 
 function StatusDot({ status }: { status: InstanceStatus }) {
@@ -103,6 +104,7 @@ export function InstanceSwitcher({
   onAdd,
   onUpdate,
   onRemove,
+  onDisconnect,
 }: InstanceSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -285,13 +287,27 @@ export function InstanceSwitcher({
                 onCancel={() => setShowAddForm(false)}
               />
             ) : (
-              <button
-                onClick={() => { setShowAddForm(true); setEditingId(null) }}
-                className="flex items-center gap-2 w-full px-3 h-9 text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs transition-colors"
-              >
-                <Plus size={14} />
-                添加实例
-              </button>
+              <>
+                <button
+                  onClick={() => { setShowAddForm(true); setEditingId(null) }}
+                  className="flex items-center gap-2 w-full px-3 h-9 text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs transition-colors"
+                >
+                  <Plus size={14} />
+                  添加实例
+                </button>
+                {activeInstanceId && onDisconnect && (
+                  <button
+                    onClick={() => {
+                      onDisconnect()
+                      setOpen(false)
+                    }}
+                    className="flex items-center gap-2 w-full px-3 h-9 text-[var(--text-muted)] hover:text-red-400 text-xs transition-colors border-t border-[var(--border-color)]"
+                  >
+                    <LogOut size={14} />
+                    退出实例
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
