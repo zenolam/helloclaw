@@ -1,0 +1,12 @@
+{
+  "name": "周报生成",
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 9 * * 1"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "请生成本周自媒体数据报告，包括：1. 各平台发布文章数量 2. 总阅读量和互动数据 3. 表现最好的文章 4. 下周内容建议"
+  },
+  "enabled": true
+}

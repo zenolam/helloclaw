@@ -18,18 +18,32 @@ export default defineConfig({
           vite: {
             build: {
               outDir: 'dist-electron',
+              rollupOptions: {
+                external: ['better-sqlite3'],
+              },
             },
+          },
+          onstart(options) {
+            options.startup()
           },
         },
         {
           entry: 'electron/preload.ts',
+          onstart(options) {
+            options.reload()
+          },
           vite: {
             build: {
               outDir: 'dist-electron',
+              minify: process.env.NODE_ENV === 'production',
+              rollupOptions: {
+                external: ['electron'],
+                output: {
+                  format: 'cjs',
+                  entryFileNames: '[name].js',
+                },
+              },
             },
-          },
-          onstart(options) {
-            options.reload()
           },
         },
       ]),

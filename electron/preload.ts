@@ -1,9 +1,14 @@
-import { contextBridge, ipcRenderer } from 'electron'
+const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
   onMainProcessMessage: (callback: (message: string) => void) => {
-    ipcRenderer.on('main-process-message', (_event, message) => callback(message))
+    ipcRenderer.on('main-process-message', (_event: unknown, message: string) => callback(message))
+  },
+
+  // Generic invoke for dynamic IPC calls (used by apps store)
+  invoke: (channel: string, ...args: unknown[]) => {
+    return ipcRenderer.invoke(channel, ...args)
   },
 
   // ─── Instances (SQLite via main process) ──────────────────────────────────

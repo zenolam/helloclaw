@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Wifi, WifiOff, Loader2, AlertCircle } from 'lucide-react'
+import { Wifi, WifiOff, Loader2, AlertCircle, Eye, EyeOff } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { ConnectionConfig, ConnectionError } from '@/store/connection'
@@ -15,6 +15,7 @@ export function ConnectDialog({ onConnect, state, connError, currentConfig }: Co
   const [url, setUrl] = useState(currentConfig?.url ?? 'http://localhost:18789')
   const [token, setToken] = useState(currentConfig?.token ?? 'e935006e41165e187aecd9ceeed7e965969fce796173bc14')
   const [password, setPassword] = useState(currentConfig?.password ?? '')
+  const [showToken, setShowToken] = useState(false)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -86,14 +87,24 @@ export function ConnectDialog({ onConnect, state, connError, currentConfig }: Co
             <label className="text-[#a0a0a0] text-sm font-medium">
               Token <span className="text-[#555]">(可选)</span>
             </label>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="sk-..."
-              className="h-10 px-3 rounded-lg bg-[#1a1a1a] border border-[#333] text-white text-sm placeholder:text-[#555] focus:outline-none focus:border-primary transition-colors"
-              disabled={state === 'connecting'}
-            />
+            <div className="relative">
+              <input
+                type={showToken ? 'text' : 'password'}
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder="sk-..."
+                className="h-10 w-full px-3 pr-10 rounded-lg bg-[#1a1a1a] border border-[#333] text-white text-sm placeholder:text-[#555] focus:outline-none focus:border-primary transition-colors"
+                disabled={state === 'connecting'}
+              />
+              <button
+                type="button"
+                onClick={() => setShowToken(!showToken)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-[#666] hover:text-[#999] transition-colors"
+                tabIndex={-1}
+              >
+                {showToken ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-col gap-1.5">

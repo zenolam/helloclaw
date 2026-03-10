@@ -1,16 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { Sidebar } from '@/components/Sidebar'
+import type { Page } from '@/components/Sidebar'
 import { ConnectDialog } from '@/components/ConnectDialog'
+import { AppView } from '@/components/AppView'
 import { ChatPage } from '@/pages/ChatPage'
 import { AgentsPage } from '@/pages/AgentsPage'
 import { AgentDetailPage } from '@/pages/AgentDetailPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { AppCenterPage } from '@/pages/AppCenterPage'
 import { useOpenClawConnection } from '@/store/connection'
 import { useInstances } from '@/store/instances'
+import { useApps } from '@/apps/store'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { AgentEntry } from '@/lib/openclaw-api'
-
-type Page = 'chat' | 'agents' | 'settings'
 
 export default function App() {
   const [activePage, setActivePage] = useState<Page>('chat')
@@ -29,6 +31,9 @@ export default function App() {
     setInstanceStatus,
   } = useInstances()
 
+  // 应用中心状态
+  const { installedApps } = useApps()
+
   // 当前活跃实例的连接
   const connection = useOpenClawConnection()
 
@@ -37,11 +42,11 @@ export default function App() {
     state,
     connError,
     sessions,
-    agents,
     agentsList,
     activeSessionKey,
     chatState,
     connect,
+    disconnect,
     selectSession,
     sendMessage,
     abortChat,
@@ -73,9 +78,7 @@ export default function App() {
     if (prevInstanceIdRef.current === activeInstanceId) return
     prevInstanceIdRef.current = activeInstanceId
 
-    // 切换到新实例，使用该实例的配置重新连接
     connect(activeInstance.config)
-    // 重置页面状态
     setSelectedAgent(null)
   }, [activeInstanceId, activeInstance, connect])
 
@@ -92,14 +95,16 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', next)
   }
 
-  // 添加实例并返回实例对象（供 InstanceSwitcher 自动切换用）
   const handleAddInstance = (name: string, cfg: import('@/store/connection').ConnectionConfig) => {
     return addInstance(name, cfg)
   }
 
-  // 切换实例
   const handleSwitchInstance = (id: string) => {
     switchInstance(id)
+  }
+
+  const handleDisconnectInstance = () => {
+    disconnect()
   }
 
   return (
@@ -116,15 +121,19 @@ export default function App() {
           onAddInstance={handleAddInstance}
           onUpdateInstance={updateInstance}
           onRemoveInstance={removeInstance}
+          onDisconnectInstance={handleDisconnectInstance}
+          installedApps={installedApps}
         />
 
         <main className="flex flex-1 h-full overflow-hidden">
           {!isConnected ? (
             <ConnectDialog
-              onConnect={(cfg) => {
-                // 如果有活跃实例，更新其配置；否则直接连接
+              onConnect={async (cfg) => {
                 if (activeInstanceId) {
                   updateInstance(activeInstanceId, { config: cfg })
+                } else {
+                  const newInstance = await addInstance('默认实例', cfg)
+                  switchInstance(newInstance.id)
                 }
                 connect(cfg)
               }}
@@ -182,6 +191,19 @@ export default function App() {
                   config={activeInstance?.config ?? config}
                   fetchModels={fetchModels}
                   fetchChannels={fetchChannels}
+                />
+              )}
+
+              {activePage === 'appCenter' && (
+                <AppCenterPage
+                  onOpenApp={(appId) => setActivePage({ type: 'app', id: appId })}
+                />
+              )}
+
+              {typeof activePage === 'object' && activePage.type === 'app' && (
+                <AppView
+                  appId={activePage.id}
+                  onBack={() => setActivePage('appCenter')}
                 />
               )}
             </>

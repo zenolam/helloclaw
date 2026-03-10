@@ -1,0 +1,12 @@
+{
+  "name": "日报生成",
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 18 * * *"
+  },
+  "payload": {
+    "kind": "agentTurn",
+    "message": "请生成本日工作报告并保存到 daily-reports/{date}.md。报告内容包括：\n1. 今日完成的工作（发布的文章、更新的内容等）\n2. 工作时长统计\n3. OKR 进度更新\n4. 遇到的问题和解决方案\n5. 明日计划\n\n请使用 YAML frontmatter 格式，包含 date 和 generatedAt 字段。"
+  },
+  "enabled": true
+}
