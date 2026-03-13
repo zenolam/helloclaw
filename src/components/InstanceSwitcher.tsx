@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
-import { ChevronsUpDown, Plus, Check, Circle, Pencil, Trash2, X, Loader2, LogOut } from 'lucide-react'
+import { ChevronsUpDown, Plus, Check, Circle, Pencil, Trash2, X, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Instance, InstanceStatus } from '@/store/instances'
 import type { ConnectionConfig } from '@/store/connection'
+import { useI18n } from '@/i18n'
 
 type InstanceSwitcherProps = {
   instances: Instance[]
@@ -34,6 +35,7 @@ type AddInstanceFormProps = {
 }
 
 function InstanceForm({ onSubmit, onCancel, initial }: AddInstanceFormProps) {
+  const { t } = useI18n()
   const [name, setName] = useState(initial?.name ?? '')
   const [url, setUrl] = useState(initial?.config.url ?? 'http://localhost:18789')
   const [token, setToken] = useState(initial?.config.token ?? '')
@@ -47,18 +49,18 @@ function InstanceForm({ onSubmit, onCancel, initial }: AddInstanceFormProps) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-2 px-2 py-2">
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">实例名称</label>
+        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">{t('instances.form.name')}</label>
         <input
           autoFocus
           type="text"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="如：Production"
+          placeholder={t('instances.form.namePlaceholder')}
           className="h-8 px-2.5 rounded-md bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)] text-xs placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--primary)] transition-colors"
         />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">服务器地址</label>
+        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">{t('instances.form.serverUrl')}</label>
         <input
           type="text"
           value={url}
@@ -68,7 +70,7 @@ function InstanceForm({ onSubmit, onCancel, initial }: AddInstanceFormProps) {
         />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">Token（可选）</label>
+        <label className="text-[10px] text-[var(--text-muted)] font-medium uppercase tracking-wide">{t('instances.form.token')}</label>
         <input
           type="password"
           value={token}
@@ -81,16 +83,16 @@ function InstanceForm({ onSubmit, onCancel, initial }: AddInstanceFormProps) {
         <button
           type="submit"
           disabled={!url.trim()}
-          className="flex-1 h-7 rounded-md bg-[var(--primary)] text-white text-xs font-medium hover:bg-[var(--primary-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="flex-1 h-7 rounded-md border border-[var(--action-border)] bg-[var(--action-bg)] text-[var(--action-foreground)] text-xs font-medium hover:bg-[var(--action-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {initial ? '保存' : '添加'}
+          {initial ? t('instances.form.save') : t('instances.form.add')}
         </button>
         <button
           type="button"
           onClick={onCancel}
           className="flex-1 h-7 rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] text-xs hover:text-[var(--text-primary)] transition-colors"
         >
-          取消
+          {t('instances.form.cancel')}
         </button>
       </div>
     </form>
@@ -106,6 +108,7 @@ export function InstanceSwitcher({
   onRemove,
   onDisconnect,
 }: InstanceSwitcherProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -180,7 +183,7 @@ export function InstanceSwitcher({
             <>
               <StatusDot status={activeInstance.status} />
               <div className="flex flex-col items-start min-w-0">
-                <span className="text-[10px] text-[var(--text-muted)] leading-none mb-0.5">当前实例</span>
+                <span className="text-[10px] text-[var(--text-muted)] leading-none mb-0.5">{t('sidebar.instance.current')}</span>
                 <span className="text-[13px] text-[var(--text-primary)] font-medium leading-none truncate max-w-[120px]">
                   {activeInstance.name}
                 </span>
@@ -190,8 +193,8 @@ export function InstanceSwitcher({
             <>
               <Circle size={8} className="text-[var(--text-muted)] shrink-0" />
               <div className="flex flex-col items-start">
-                <span className="text-[10px] text-[var(--text-muted)] leading-none mb-0.5">实例</span>
-                <span className="text-[13px] text-[var(--text-muted)] leading-none">未选择</span>
+                <span className="text-[10px] text-[var(--text-muted)] leading-none mb-0.5">{t('sidebar.instance.label')}</span>
+                <span className="text-[13px] text-[var(--text-muted)] leading-none">{t('sidebar.instance.unselected')}</span>
               </div>
             </>
           )}
@@ -208,7 +211,7 @@ export function InstanceSwitcher({
         >
           {/* 面板标题 */}
           <div className="flex items-center justify-between px-3 h-9 border-b border-[var(--border-color)]">
-            <span className="text-[11px] text-[var(--text-muted)] font-medium uppercase tracking-wide">切换实例</span>
+            <span className="text-[11px] text-[var(--text-muted)] font-medium uppercase tracking-wide">{t('instances.panel.title')}</span>
             <button
               onClick={() => { setOpen(false); setShowAddForm(false); setEditingId(null) }}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
@@ -220,7 +223,7 @@ export function InstanceSwitcher({
           {/* 实例列表 */}
           <div className="flex flex-col p-1.5 gap-0.5 max-h-60 overflow-y-auto">
             {instances.length === 0 && (
-              <p className="text-[var(--text-muted)] text-xs text-center py-3">暂无实例</p>
+              <p className="text-[var(--text-muted)] text-xs text-center py-3">{t('instances.panel.noInstances')}</p>
             )}
             {instances.map((instance) => (
               <div key={instance.id}>
@@ -259,7 +262,7 @@ export function InstanceSwitcher({
                       <button
                         onClick={(e) => { e.stopPropagation(); setEditingId(instance.id); setShowAddForm(false) }}
                         className="opacity-0 group-hover:opacity-100 p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all"
-                        title="编辑"
+                        title={t('instances.actions.edit')}
                       >
                         <Pencil size={12} />
                       </button>
@@ -267,7 +270,7 @@ export function InstanceSwitcher({
                         <button
                           onClick={(e) => { e.stopPropagation(); handleRemove(instance.id) }}
                           className="opacity-0 group-hover:opacity-100 p-0.5 text-[var(--text-muted)] hover:text-red-400 transition-all"
-                          title="删除"
+                          title={t('instances.actions.delete')}
                         >
                           <Trash2 size={12} />
                         </button>
@@ -293,7 +296,7 @@ export function InstanceSwitcher({
                   className="flex items-center gap-2 w-full px-3 h-9 text-[var(--text-muted)] hover:text-[var(--text-primary)] text-xs transition-colors"
                 >
                   <Plus size={14} />
-                  添加实例
+                  {t('instances.panel.addInstance')}
                 </button>
                 {activeInstanceId && onDisconnect && (
                   <button
@@ -304,7 +307,7 @@ export function InstanceSwitcher({
                     className="flex items-center gap-2 w-full px-3 h-9 text-[var(--text-muted)] hover:text-red-400 text-xs transition-colors border-t border-[var(--border-color)]"
                   >
                     <LogOut size={14} />
-                    退出实例
+                    {t('instances.panel.disconnect')}
                   </button>
                 )}
               </>

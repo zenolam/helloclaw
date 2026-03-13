@@ -53,6 +53,50 @@ db.exec(`
   )
 `)
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS downloaded_apps (
+    id              TEXT PRIMARY KEY,
+    manifest        TEXT NOT NULL,
+    versions        TEXT NOT NULL,
+    current_version TEXT NOT NULL,
+    downloaded_at   INTEGER NOT NULL,
+    path            TEXT NOT NULL
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_instances (
+    id           TEXT PRIMARY KEY,
+    app_id       TEXT NOT NULL,
+    app_version  TEXT NOT NULL,
+    agent_id     TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    sequence     INTEGER NOT NULL,
+    created_at   INTEGER NOT NULL,
+    enabled      INTEGER DEFAULT 1,
+    data_path    TEXT NOT NULL
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_files (
+    app_id   TEXT NOT NULL,
+    version  TEXT NOT NULL,
+    path     TEXT NOT NULL,
+    content  TEXT NOT NULL,
+    PRIMARY KEY (app_id, version, path)
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS instance_data (
+    instance_id TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (instance_id, key)
+  )
+`)
+
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
 ipcMain.handle('instances:list', () => {
@@ -152,6 +196,153 @@ ipcMain.handle('apps:update', (_event, id: string, updates: Record<string, unkno
 
 ipcMain.handle('apps:remove', (_event, id: string) => {
   db.prepare('DELETE FROM apps WHERE id = ?').run(id)
+})
+
+// ─── Downloaded Apps IPC handlers ─────────────────────────────────────────────
+
+ipcMain.handle('apps:listDownloaded', () => {
+  return db.prepare('SELECT * FROM downloaded_apps ORDER BY downloaded_at DESC').all() as Record<string, unknown>[]
+})
+
+ipcMain.handle('apps:getDownloaded', (_event, id: string) => {
+  return db.prepare('SELECT * FROM downloaded_apps WHERE id = ?').get(id) as Record<string, unknown> | undefined
+})
+
+ipcMain.handle('apps:addDownloaded', (_event, app: {
+  id: string
+  manifest: string
+  versions: string
+  current_version: string
+  downloaded_at: number
+  path: string
+}) => {
+  db.prepare(`
+    INSERT OR REPLACE INTO downloaded_apps (id, manifest, versions, current_version, downloaded_at, path)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(app.id, app.manifest, app.versions, app.current_version, app.downloaded_at, app.path)
+  return app
+})
+
+ipcMain.handle('apps:updateDownloaded', (_event, id: string, updates: Record<string, unknown>) => {
+  const fields: string[] = []
+  const values: unknown[] = []
+
+  if (updates.manifest !== undefined)        { fields.push('manifest = ?');        values.push(updates.manifest) }
+  if (updates.versions !== undefined)        { fields.push('versions = ?');        values.push(updates.versions) }
+  if (updates.current_version !== undefined) { fields.push('current_version = ?'); values.push(updates.current_version) }
+  if (updates.downloaded_at !== undefined)   { fields.push('downloaded_at = ?');   values.push(updates.downloaded_at) }
+  if (updates.path !== undefined)            { fields.push('path = ?');            values.push(updates.path) }
+
+  if (fields.length === 0) return
+  values.push(id)
+  db.prepare(`UPDATE downloaded_apps SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+})
+
+ipcMain.handle('apps:removeDownloaded', (_event, id: string) => {
+  db.prepare('DELETE FROM app_files WHERE app_id = ?').run(id)
+  db.prepare('DELETE FROM downloaded_apps WHERE id = ?').run(id)
+})
+
+ipcMain.handle('apps:getFiles', (_event, appId: string, version: string) => {
+  const rows = db.prepare(`
+    SELECT path, content
+    FROM app_files
+    WHERE app_id = ? AND version = ?
+    ORDER BY path ASC
+  `).all(appId, version) as Array<{ path: string; content: string }>
+
+  return Object.fromEntries(rows.map((row) => [row.path, row.content]))
+})
+
+ipcMain.handle('apps:setFiles', (_event, payload: {
+  app_id: string
+  version: string
+  files: Record<string, string>
+}) => {
+  const removeExisting = db.prepare('DELETE FROM app_files WHERE app_id = ? AND version = ?')
+  const insertFile = db.prepare(`
+    INSERT OR REPLACE INTO app_files (app_id, version, path, content)
+    VALUES (?, ?, ?, ?)
+  `)
+
+  const persistFiles = db.transaction((appId: string, version: string, files: Record<string, string>) => {
+    removeExisting.run(appId, version)
+    for (const [filePath, content] of Object.entries(files)) {
+      insertFile.run(appId, version, filePath, content)
+    }
+  })
+
+  persistFiles(payload.app_id, payload.version, payload.files)
+})
+
+ipcMain.handle('apps:removeFiles', (_event, appId: string, version?: string) => {
+  if (version) {
+    db.prepare('DELETE FROM app_files WHERE app_id = ? AND version = ?').run(appId, version)
+    return
+  }
+
+  db.prepare('DELETE FROM app_files WHERE app_id = ?').run(appId)
+})
+
+// ─── App Instances IPC handlers ───────────────────────────────────────────────
+
+ipcMain.handle('apps:listInstances', (_event, appId?: string) => {
+  if (appId) {
+    return db.prepare('SELECT * FROM app_instances WHERE app_id = ? ORDER BY created_at DESC').all(appId) as Record<string, unknown>[]
+  }
+  return db.prepare('SELECT * FROM app_instances ORDER BY created_at DESC').all() as Record<string, unknown>[]
+})
+
+ipcMain.handle('apps:getInstance', (_event, id: string) => {
+  return db.prepare('SELECT * FROM app_instances WHERE id = ?').get(id) as Record<string, unknown> | undefined
+})
+
+ipcMain.handle('apps:addInstance', (_event, instance: {
+  id: string
+  app_id: string
+  app_version: string
+  agent_id: string
+  display_name: string
+  sequence: number
+  created_at: number
+  enabled: number
+  data_path: string
+}) => {
+  db.prepare(`
+    INSERT INTO app_instances (id, app_id, app_version, agent_id, display_name, sequence, created_at, enabled, data_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    instance.id,
+    instance.app_id,
+    instance.app_version,
+    instance.agent_id,
+    instance.display_name,
+    instance.sequence,
+    instance.created_at,
+    instance.enabled,
+    instance.data_path
+  )
+  return instance
+})
+
+ipcMain.handle('apps:updateInstance', (_event, id: string, updates: Record<string, unknown>) => {
+  const fields: string[] = []
+  const values: unknown[] = []
+
+  if (updates.app_version !== undefined) { fields.push('app_version = ?'); values.push(updates.app_version) }
+  if (updates.agent_id !== undefined)     { fields.push('agent_id = ?');     values.push(updates.agent_id) }
+  if (updates.display_name !== undefined) { fields.push('display_name = ?'); values.push(updates.display_name) }
+  if (updates.enabled !== undefined)      { fields.push('enabled = ?');      values.push(updates.enabled) }
+  if (updates.data_path !== undefined)    { fields.push('data_path = ?');    values.push(updates.data_path) }
+
+  if (fields.length === 0) return
+  values.push(id)
+  db.prepare(`UPDATE app_instances SET ${fields.join(', ')} WHERE id = ?`).run(...values)
+})
+
+ipcMain.handle('apps:removeInstance', (_event, id: string) => {
+  db.prepare('DELETE FROM instance_data WHERE instance_id = ?').run(id)
+  db.prepare('DELETE FROM app_instances WHERE id = ?').run(id)
 })
 
 // Scan local apps directory
@@ -256,6 +447,52 @@ ipcMain.handle('apps:scanLocal', () => {
 
   console.log(`[apps:scanLocal] Returning ${localApps.length} apps`)
   return localApps
+})
+
+// Get files for a specific local app
+ipcMain.handle('apps:getLocalFiles', (_event, appId: string) => {
+  console.log(`[apps:getLocalFiles] Getting files for app: ${appId}`)
+
+  let localAppsPath: string
+  if (VITE_DEV_SERVER_URL) {
+    localAppsPath = path.join(process.env.APP_ROOT!, 'apps')
+  } else {
+    localAppsPath = path.join(app.getPath('userData'), 'apps')
+  }
+
+  const appPath = path.join(localAppsPath, appId)
+  if (!fs.existsSync(appPath)) {
+    console.log(`[apps:getLocalFiles] App directory not found: ${appPath}`)
+    return null
+  }
+
+  const files: Record<string, string> = {}
+
+  const readDir = (dir: string, basePath: string = '') => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name)
+      const relativePath = basePath ? `${basePath}/${entry.name}` : entry.name
+
+      if (entry.isDirectory()) {
+        readDir(fullPath, relativePath)
+      } else {
+        // Skip binary files
+        if (entry.name.endsWith('.png') || entry.name.endsWith('.jpg') || entry.name.endsWith('.svg')) {
+          continue
+        }
+        try {
+          files[relativePath] = fs.readFileSync(fullPath, 'utf-8')
+        } catch (err) {
+          console.error(`[apps:getLocalFiles] Failed to read file ${relativePath}:`, err)
+        }
+      }
+    }
+  }
+
+  readDir(appPath)
+  console.log(`[apps:getLocalFiles] Returning ${Object.keys(files).length} files for app ${appId}`)
+  return files
 })
 
 function rowToInstance(row: Record<string, unknown>) {

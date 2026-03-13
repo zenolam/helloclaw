@@ -33,6 +33,7 @@ import type {
   CommandConfig,
   SDKEventMap,
 } from './types'
+import { translate } from '@/i18n'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Event Emitter
@@ -443,7 +444,7 @@ export class HelloClawSDKImpl extends EventEmitter<SDKEventMap> implements Hello
               background: transparent;
               color: var(--text-secondary, #a0a0a0);
               cursor: pointer;
-            ">${config.cancelText || '取消'}</button>
+            ">${config.cancelText || translate('common.cancel')}</button>
             <button class="helloclaw-modal-confirm" style="
               padding: 8px 16px;
               border-radius: 6px;
@@ -451,7 +452,7 @@ export class HelloClawSDKImpl extends EventEmitter<SDKEventMap> implements Hello
               background: var(--primary, #3b82f6);
               color: white;
               cursor: pointer;
-            ">${config.confirmText || '确认'}</button>
+            ">${config.confirmText || translate('common.confirm')}</button>
           </div>
         `
 
@@ -488,7 +489,7 @@ export class HelloClawSDKImpl extends EventEmitter<SDKEventMap> implements Hello
       createView: (config: ViewConfig): View => {
         const container = document.createElement('div')
         container.id = `view-${config.id}`
-        container.className = 'helloclaw-view'
+        container.className = 'helloclaw-view w-full h-full'
 
         const view: View = {
           id: config.id,

@@ -1,12 +1,13 @@
 {
-  "name": "日报生成",
+  "name": "内容运营晨检",
   "schedule": {
     "kind": "cron",
-    "expr": "0 18 * * *"
+    "expr": "30 8 * * *",
+    "tz": "Asia/Shanghai"
   },
   "payload": {
     "kind": "agentTurn",
-    "message": "请生成本日工作报告并保存到 daily-reports/{date}.md。报告内容包括：\n1. 今日完成的工作（发布的文章、更新的内容等）\n2. 工作时长统计\n3. OKR 进度更新\n4. 遇到的问题和解决方案\n5. 明日计划\n\n请使用 YAML frontmatter 格式，包含 date 和 generatedAt 字段。"
+    "message": "你正在为专业自媒体人执行晨间运营检查。请输出：1. 今日最关键的三件事 2. 待发布内容的风险提醒 3. 建议优先复用或追加分发的内容 4. 一条今天值得测试的增长实验。默认面向中文内容平台。"
   },
   "enabled": true
 }

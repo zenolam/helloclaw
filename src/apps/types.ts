@@ -22,6 +22,25 @@ export interface SidebarConfig {
 }
 
 /**
+ * OpenClaw bootstrap file names supported by agent workspaces
+ */
+export type BootstrapFileName =
+  | 'AGENTS.md'
+  | 'SOUL.md'
+  | 'TOOLS.md'
+  | 'IDENTITY.md'
+  | 'USER.md'
+  | 'HEARTBEAT.md'
+  | 'BOOTSTRAP.md'
+  | 'MEMORY.md'
+  | 'memory.md'
+
+/**
+ * OpenClaw bootstrap file contents keyed by filename
+ */
+export type BootstrapFiles = Partial<Record<BootstrapFileName, string>>
+
+/**
  * Agent configuration in manifest
  */
 export interface AgentConfig {
@@ -29,8 +48,7 @@ export interface AgentConfig {
   id: string
   /** Display name */
   name: string
-  /** Path to system prompt file (relative to app root) */
-  systemPrompt: string
+  /** Bootstrap files like SOUL.md and AGENTS.md are synced from the app root */
   /** Glob patterns for skill files */
   skills?: string[]
   /** Glob patterns for cronjob files */
@@ -90,11 +108,50 @@ export interface AppManifest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Installed App Types
+// App Lifecycle Types
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Installed app record (stored in database)
+ * App lifecycle state
+ *
+ * The app goes through three main states:
+ * 1. remote - App exists in marketplace, not downloaded
+ * 2. downloaded - App downloaded to local filesystem (apps/{appId}/{version}/)
+ * 3. instantiated - App instantiated with Agent, Skills, and CronJobs
+ */
+export type AppLifecycleState =
+  | 'remote'        // Not downloaded (in marketplace)
+  | 'downloaded'    // Downloaded to local
+  | 'instantiated'  // Instantiated with Agent
+  | 'running'       // Currently running
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Downloaded App Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Downloaded app record (stored in database)
+ *
+ * Apps are stored in a versioned structure: apps/{appId}/{version}/*
+ */
+export interface DownloadedApp {
+  /** App ID */
+  id: string
+  /** Parsed manifest (from current version) */
+  manifest: AppManifest
+  /** Available versions */
+  versions: string[]
+  /** Currently active version */
+  currentVersion: string
+  /** Download timestamp */
+  downloadedAt: number
+  /** Local storage path (apps/{appId}/) */
+  path: string
+}
+
+/**
+ * Installed app record (legacy, for backward compatibility)
+ * @deprecated Use DownloadedApp instead
  */
 export interface InstalledApp {
   /** App ID */
@@ -109,6 +166,75 @@ export interface InstalledApp {
   installPath: string
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// App Instance Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * App instance (instantiated app with Agent)
+ *
+ * After instantiation:
+ * - Page files are copied to appInstances/{instanceId}/
+ * - Agent is created in OpenClaw with name: {appName}-{agentName}-{sequence}
+ * - Skills are installed to Agent's workspace
+ * - CronJobs are registered
+ * - Sidebar tab is added with label: {appName}-{sequence}
+ */
+export interface AppInstance {
+  /** Unique instance ID (e.g., "social-media-1") */
+  id: string
+  /** Parent app ID */
+  appId: string
+  /** App version used */
+  appVersion: string
+  /** Associated Agent ID in OpenClaw */
+  agentId: string
+  /** Display name in sidebar ({appName}-{sequence}) */
+  displayName: string
+  /** Sequence number for this app */
+  sequence: number
+  /** Creation timestamp */
+  createdAt: number
+  /** Whether instance is enabled */
+  enabled: boolean
+  /** Data storage path (appInstances/{instanceId}/) */
+  dataPath: string
+}
+
+/**
+ * Configuration for instantiating an app
+ */
+export interface InstantiateConfig {
+  /** App ID to instantiate */
+  appId: string
+  /** Specific version (defaults to current version) */
+  version?: string
+  /** Custom display name (defaults to {appName}-{sequence}) */
+  displayName?: string
+  /** Agent configuration overrides */
+  agentConfig?: {
+    /** Override agent name */
+    name?: string
+    /** Override bootstrap file contents */
+    bootstrapFiles?: BootstrapFiles
+    /** Additional skills to install */
+    additionalSkills?: string[]
+  }
+}
+
+/**
+ * Result of instantiation operation
+ */
+export interface InstantiateResult {
+  success: boolean
+  instance?: AppInstance
+  error?: string
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Local App Types
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Local app discovered from apps/ directory (bundled with application)
  */
@@ -119,11 +245,17 @@ export interface LocalApp {
   manifest: AppManifest
   /** Absolute path to app directory */
   path: string
+  /** App version */
+  version: string
   /** App files content (keyed by relative path) */
   files: Record<string, string>
   /** Marker for local apps */
   isLocal: true
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Loaded App Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * App loading state
@@ -151,6 +283,8 @@ export interface LoadedApp {
   loadState: AppLoadState
   /** Error message if load failed */
   error?: string
+  /** Associated app instance ID (if instantiated) */
+  appInstanceId?: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,7 +479,7 @@ export interface AgentInfo {
 export interface CreateAgentConfig {
   id: string
   name: string
-  systemPrompt: string
+  bootstrapFiles?: BootstrapFiles
   description?: string
 }
 
@@ -353,10 +487,28 @@ export interface CreateAgentConfig {
  * Skill configuration
  */
 export interface SkillConfig {
-  name: string
-  description: string
-  trigger: string
+  /** Directory slug under skills/<slug>/SKILL.md */
+  slug: string
+  /** Parsed skill name from SKILL.md frontmatter, if available */
+  name?: string
+  /** Parsed skill description from SKILL.md frontmatter, if available */
+  description?: string
+  /** Raw OpenClaw-compatible SKILL.md content */
   content: string
+  /** Additional files inside the skill directory */
+  files?: Record<string, string>
+}
+
+/**
+ * Remote skill definition from skills/remote.json
+ */
+export interface RemoteSkillDefinition {
+  /** Skill slug; inferred from url when omitted */
+  slug?: string
+  /** Direct URL to SKILL.md */
+  url?: string
+  /** Optional extra files to download into the skill directory */
+  files?: Record<string, string>
 }
 
 /**
@@ -732,10 +884,20 @@ export interface AppMarketEntry {
 
 /**
  * App installation result
+ * @deprecated Use DownloadResult instead
  */
 export interface InstallResult {
   success: boolean
   app?: InstalledApp
+  error?: string
+}
+
+/**
+ * App download result
+ */
+export interface DownloadResult {
+  success: boolean
+  app?: DownloadedApp
   error?: string
 }
 

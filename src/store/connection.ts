@@ -7,6 +7,8 @@ import {
   sendChatMessage,
   abortChatRun,
   listAgents,
+  createAgent,
+  deleteAgent,
   listCronJobs,
   listCronRuns,
   addCronJob,
@@ -26,6 +28,7 @@ import type {
   AgentsFilesListResult,
 } from '@/lib/openclaw-api'
 import { generateId } from '@/lib/utils'
+import { translate } from '@/i18n'
 
 // Extract streaming text from a chat delta message object
 // message shape: { role, content: [{type:'text', text:'...'}] } or { text: '...' }
@@ -164,14 +167,14 @@ export function useOpenClawConnection() {
           }
         })
       } else if (ev.state === 'aborted' || ev.state === 'error') {
-        setChatState((prev) => ({
-          ...prev,
-          stream: null,
-          streamSegments: [],
-          runId: null,
-          sending: false,
-          error: ev.state === 'error' ? (ev.errorMessage ?? 'Unknown error') : null,
-        }))
+          setChatState((prev) => ({
+            ...prev,
+            stream: null,
+            streamSegments: [],
+            runId: null,
+            sending: false,
+            error: ev.state === 'error' ? (ev.errorMessage ?? translate('connection.error.unknown')) : null,
+          }))
       }
     } else if (event === 'tool') {
       const ev = payload as ToolEventPayload
@@ -261,11 +264,11 @@ export function useOpenClawConnection() {
           setConnError({ message: info.error.message, code: info.error.code })
         } else if (info.code === 4001) {
           setState('error')
-          setConnError({ message: '连接被拒绝，请检查 Token 或服务器地址', code: 'CONNECT_FAILED' })
+          setConnError({ message: translate('connection.error.connectFailed'), code: 'CONNECT_FAILED' })
         } else if (info.code === 1006) {
           // Abnormal closure — server unreachable or origin rejected at WS level
           setState('error')
-          setConnError({ message: '无法连接到服务器，请确认 OpenClaw 正在运行', code: 'UNREACHABLE' })
+          setConnError({ message: translate('connection.error.unreachable'), code: 'UNREACHABLE' })
         } else {
           setState('disconnected')
         }
@@ -315,7 +318,7 @@ export function useOpenClawConnection() {
     }
   }, [])
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, attachments?: Array<{ mimeType: string; content: string; name?: string }>) => {
     const client = clientRef.current
     if (!client?.connected || !activeSessionKey) return
 
@@ -323,6 +326,7 @@ export function useOpenClawConnection() {
       role: 'user',
       text,
       ts: Date.now(),
+      attachments,
     }
 
     setChatState((prev) => ({
@@ -336,7 +340,7 @@ export function useOpenClawConnection() {
     }))
 
     try {
-      const runId = await sendChatMessage(client, activeSessionKey, text)
+      const runId = await sendChatMessage(client, activeSessionKey, text, attachments)
       setChatState((prev) => ({ ...prev, runId }))
       // Refresh sessions after sending so new sessions appear in the sidebar
       setTimeout(() => {
@@ -374,7 +378,7 @@ export function useOpenClawConnection() {
     // Add a placeholder session to the list immediately so the sidebar shows it
     const placeholder: Session = {
       key: newKey,
-      label: '新对话',
+      label: translate('connection.newConversation'),
       displayName: agentId,
       kind: 'direct',
       updatedAt: Date.now(),
@@ -441,14 +445,18 @@ export function useOpenClawConnection() {
     payload: CronPayload
   }) => {
     const client = clientRef.current
-    if (!client?.connected) return
+    if (!client?.connected) {
+      throw new Error('Client not connected')
+    }
     await addCronJob(client, job)
   }, [])
 
   // Remove a cron job
   const deleteCronJob = useCallback(async (jobId: string) => {
     const client = clientRef.current
-    if (!client?.connected) return
+    if (!client?.connected) {
+      throw new Error('Client not connected')
+    }
     await removeCronJob(client, jobId)
   }, [])
 
@@ -474,6 +482,33 @@ export function useOpenClawConnection() {
       console.error('list models failed:', err)
       return []
     }
+  }, [])
+
+  // Create a new agent
+  const createAgentAction = useCallback(async (agent: { name: string; workspace: string }) => {
+    const client = clientRef.current
+    if (!client?.connected) throw new Error('Client not connected')
+    return await createAgent(client, agent)
+  }, [])
+
+  // Delete an existing agent
+  const deleteAgentAction = useCallback(async (agentId: string, opts?: { deleteFiles?: boolean }) => {
+    const client = clientRef.current
+    if (!client?.connected) throw new Error('Client not connected')
+    const result = await deleteAgent(client, agentId, opts)
+
+    // Optimistically remove the deleted agent so the UI updates immediately.
+    setAgentsList((prev) => prev.filter((agent) => agent.id !== agentId))
+    setSessions((prev) => prev.filter((session) => !session.key.startsWith(`agent:${agentId}:`)))
+
+    // Sync with the server shortly after delete to reconcile any lagging state.
+    window.setTimeout(() => {
+      listAgents(client)
+        .then((res) => setAgentsList(res.agents))
+        .catch((err) => console.error('list agents after delete failed:', err))
+    }, 300)
+
+    return result
   }, [])
 
   // Fetch tools catalog for an agent
@@ -516,7 +551,9 @@ export function useOpenClawConnection() {
   // Save an agent file
   const saveAgentFile = useCallback(async (agentId: string, name: string, content: string): Promise<void> => {
     const client = clientRef.current
-    if (!client?.connected) return
+    if (!client?.connected) {
+      throw new Error('Client not connected')
+    }
     await setAgentFile(client, agentId, name, content)
   }, [])
 
@@ -555,6 +592,8 @@ export function useOpenClawConnection() {
     deleteCronJob,
     fetchChannels,
     fetchModels,
+    createAgent: createAgentAction,
+    deleteAgent: deleteAgentAction,
     fetchTools,
     fetchAgentFiles,
     fetchAgentFileContent,

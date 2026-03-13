@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import type { ConnectionConfig } from './connection'
+import { translate } from '@/i18n'
 
 export type InstanceStatus = 'connected' | 'connecting' | 'disconnected' | 'error'
 
@@ -86,7 +87,7 @@ function migrateFromLegacy(): Instance[] {
     const config = JSON.parse(raw) as ConnectionConfig
     const instance: Instance = {
       id: generateId(),
-      name: 'Production',
+      name: translate('instances.default.legacy'),
       config,
       status: 'disconnected',
       createdAt: Date.now(),
@@ -158,7 +159,7 @@ export function useInstances() {
   const addInstance = useCallback(async (name: string, config: ConnectionConfig): Promise<Instance> => {
     const instance: Instance = {
       id: generateId(),
-      name: name.trim() || '新实例',
+      name: name.trim() || translate('instances.default.new'),
       config,
       status: 'disconnected',
       createdAt: Date.now(),

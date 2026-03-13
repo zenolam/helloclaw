@@ -1,22 +1,25 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, memo } from 'react'
 import {
   Plus, Bot, Code, MessageCircle, Mail, Send, Square,
   ChevronDown, Loader2, Wrench, CheckCircle, AlertCircle,
-  Clock, Globe, Cpu, Users, GitBranch,
+  Clock, Globe, Cpu, GitBranch, ImagePlus, X,
 } from 'lucide-react'
-import { cn, formatTime, generateId } from '@/lib/utils'
+import { cn, formatTime } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Button } from '@/components/ui/button'
 import ReactMarkdown from 'react-markdown'
 import type { Session, AgentEntry, ChatMessage } from '@/lib/openclaw-api'
 import type { ToolCall, StreamSegment } from '@/store/connection'
 import { extractMessageText, extractAgentIdFromSessionKey } from '@/lib/openclaw-api'
+import { type TranslateFn, useI18n } from '@/i18n'
 
-// Agent avatar colors
 const AGENT_COLORS = [
   '#dc2626', '#3b82f6', '#10b981', '#ec4899', '#8b5cf6',
   '#f59e0b', '#06b6d4', '#84cc16',
 ]
+
+const CHAT_SIDEBAR_WIDTH = 'w-[clamp(18rem,24vw,32rem)]'
+const CHAT_BUBBLE_MAX_WIDTH = 'max-w-[min(100%,72ch)] sm:max-w-[min(94%,76ch)] xl:max-w-[min(90%,84ch)]'
 
 function getAgentColor(key: string): string {
   let hash = 0
@@ -33,21 +36,18 @@ function getAgentIcon(agentKey?: string | null) {
   return <Bot size={20} className="text-white" />
 }
 
-// Extract channel from session key: agent:<agentId>:<channel>:...
 function extractChannelFromKey(key: string): string {
   const parts = key.split(':')
-  // format: agent:<agentId>:<channel>[:<subtype>:<id>]
   return parts[2] ?? 'main'
 }
 
-// Channel icon + color config
 type ChannelConfig = { icon: React.ReactNode; bg: string; label: string }
 
-function getChannelConfig(channel: string): ChannelConfig {
+function getChannelConfig(channel: string, t: TranslateFn): ChannelConfig {
   switch (channel) {
     case 'telegram':
       return {
-        label: 'Telegram',
+        label: t('chat.channel.telegram'),
         bg: '#229ED9',
         icon: (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
@@ -57,7 +57,7 @@ function getChannelConfig(channel: string): ChannelConfig {
       }
     case 'feishu':
       return {
-        label: '飞书',
+        label: t('chat.channel.feishu'),
         bg: '#3370FF',
         icon: (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
@@ -67,7 +67,7 @@ function getChannelConfig(channel: string): ChannelConfig {
       }
     case 'slack':
       return {
-        label: 'Slack',
+        label: t('chat.channel.slack'),
         bg: '#4A154B',
         icon: (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
@@ -77,7 +77,7 @@ function getChannelConfig(channel: string): ChannelConfig {
       }
     case 'discord':
       return {
-        label: 'Discord',
+        label: t('chat.channel.discord'),
         bg: '#5865F2',
         icon: (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
@@ -87,7 +87,7 @@ function getChannelConfig(channel: string): ChannelConfig {
       }
     case 'whatsapp':
       return {
-        label: 'WhatsApp',
+        label: t('chat.channel.whatsapp'),
         bg: '#25D366',
         icon: (
           <svg width="10" height="10" viewBox="0 0 24 24" fill="white">
@@ -97,25 +97,25 @@ function getChannelConfig(channel: string): ChannelConfig {
       }
     case 'cron':
       return {
-        label: 'Cron',
+        label: t('chat.channel.cron'),
         bg: '#6366f1',
         icon: <Clock size={9} className="text-white" />,
       }
     case 'subagent':
       return {
-        label: 'Sub-agent',
+        label: t('chat.channel.subagent'),
         bg: '#8b5cf6',
         icon: <GitBranch size={9} className="text-white" />,
       }
     case 'webchat':
       return {
-        label: 'WebChat',
+        label: t('chat.channel.webchat'),
         bg: '#10b981',
         icon: <Globe size={9} className="text-white" />,
       }
     case 'main':
       return {
-        label: 'Direct',
+        label: t('chat.channel.main'),
         bg: '#3b82f6',
         icon: <Cpu size={9} className="text-white" />,
       }
@@ -128,24 +128,17 @@ function getChannelConfig(channel: string): ChannelConfig {
   }
 }
 
-// Derive a human-readable name from a session
 function getSessionDisplayName(session: Session): string {
-  // label is the user-set or cron-generated name (most reliable)
   if (session.label) return session.label
-  // displayName is set by the platform (e.g. telegram username)
   if (session.displayName) return session.displayName
-  // Legacy fields
   if (session.agentName) return session.agentName
   if (session.title) return session.title
-  // Fall back to agent id extracted from key
   const agentId = extractAgentIdFromSessionKey(session.key)
   if (agentId) return agentId
   return session.key
 }
 
-// Get a subtitle / sub-info for the session
 function getSessionSubtitle(session: Session): string | null {
-  // Show the agent id as subtitle when we have a label
   if (session.label || session.displayName) {
     const agentId = extractAgentIdFromSessionKey(session.key)
     if (agentId) return agentId
@@ -153,8 +146,7 @@ function getSessionSubtitle(session: Session): string | null {
   return session.preview ?? null
 }
 
-// Session list item
-function SessionItem({
+const SessionItem = memo(function SessionItem({
   session,
   active,
   onClick,
@@ -163,13 +155,13 @@ function SessionItem({
   active: boolean
   onClick: () => void
 }) {
+  const { t } = useI18n()
   const agentId = extractAgentIdFromSessionKey(session.key) ?? session.agentKey ?? session.key
   const color = getAgentColor(agentId)
   const displayName = getSessionDisplayName(session)
   const subtitle = getSessionSubtitle(session)
   const ts = session.updatedAt ?? session.lastMessageAt
-  const channel = extractChannelFromKey(session.key)
-  const channelCfg = getChannelConfig(channel)
+  const channelCfg = getChannelConfig(extractChannelFromKey(session.key), t)
 
   return (
     <button
@@ -179,7 +171,6 @@ function SessionItem({
         active ? 'bg-[var(--bg-tertiary)]' : 'hover:bg-[var(--bg-tertiary)]/50'
       )}
     >
-      {/* Avatar with channel badge */}
       <div className="relative shrink-0">
         <div
           className="w-10 h-10 rounded-full flex items-center justify-center"
@@ -187,7 +178,6 @@ function SessionItem({
         >
           {getAgentIcon(agentId)}
         </div>
-        {/* Channel badge */}
         <div
           className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full flex items-center justify-center ring-2 ring-[var(--bg-secondary)]"
           style={{ backgroundColor: channelCfg.bg }}
@@ -197,24 +187,25 @@ function SessionItem({
         </div>
       </div>
 
-      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-[var(--text-primary)] text-sm font-medium truncate">
+      <div className="flex flex-col gap-1 min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <span className="min-w-0 flex-1 whitespace-normal break-words text-[var(--text-primary)] text-sm font-medium leading-snug">
             {displayName}
           </span>
-          <span className="text-[var(--text-muted)] text-xs shrink-0">
+          <span className="pt-0.5 text-[var(--text-muted)] text-xs shrink-0">
             {ts != null ? formatTime(ts) : '—'}
           </span>
         </div>
         {subtitle && (
-          <span className="text-[var(--text-muted)] text-xs truncate">{subtitle}</span>
+          <span className="whitespace-normal break-words text-[var(--text-muted)] text-xs leading-snug">
+            {subtitle}
+          </span>
         )}
       </div>
     </button>
   )
-}
+})
 
-// Agent dropdown item
 function AgentDropdownItem({
   agent,
   onClick,
@@ -240,14 +231,15 @@ function AgentDropdownItem({
   )
 }
 
-// Tool call display
-function ToolCallItem({ tool }: { tool: ToolCall }) {
+const ToolCallItem = memo(function ToolCallItem({ tool }: { tool: ToolCall }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
+
   return (
     <div className="flex items-start gap-2 py-1">
       <div className="mt-0.5 shrink-0">
         {tool.state === 'running' ? (
-          <Loader2 size={14} className="text-primary animate-spin" />
+          <Loader2 size={14} className="animate-spin text-[var(--primary)]" />
         ) : (
           <CheckCircle size={14} className="text-green-500" />
         )}
@@ -260,7 +252,7 @@ function ToolCallItem({ tool }: { tool: ToolCall }) {
           <Wrench size={12} className="text-[var(--text-muted)] shrink-0" />
           <span className="text-[var(--text-secondary)] text-xs font-mono">{tool.toolName}</span>
           {tool.state === 'running' && (
-            <span className="text-[var(--text-muted)] text-xs">运行中...</span>
+            <span className="text-[var(--text-muted)] text-xs">{t('chat.tool.running')}</span>
           )}
           <ChevronDown
             size={12}
@@ -275,67 +267,126 @@ function ToolCallItem({ tool }: { tool: ToolCall }) {
       </div>
     </div>
   )
-}
+})
 
-// Message bubble
-function MessageBubble({ message }: { message: ChatMessage }) {
+const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
+  const { t } = useI18n()
   const isUser = message.role === 'user'
   const text = extractMessageText(message)
 
-  if (!text && message.role !== 'tool') return null
+  let attachments = message.attachments ? [...message.attachments] : []
+
+  if (Array.isArray(message.content)) {
+    for (const part of message.content) {
+      if (part.type === 'image' || part.type === 'image_url') {
+        let mimeType = 'image/jpeg'
+        let content = ''
+
+        if (part.image_url && typeof part.image_url === 'object' && typeof (part.image_url as any).url === 'string') {
+          const url = (part.image_url as any).url as string
+          if (url.startsWith('data:')) {
+            const match = url.match(/^data:(image\/[a-zA-Z0-9.+]+);base64,(.*)$/)
+            if (match) {
+              mimeType = match[1]
+              content = match[2]
+            } else {
+              content = url.split(',')[1] || url
+            }
+          }
+        } else if (part.source && typeof part.source === 'object' && typeof (part.source as any).data === 'string') {
+          content = (part.source as any).data
+          if (typeof (part.source as any).media_type === 'string') {
+            mimeType = (part.source as any).media_type
+          }
+        } else if (typeof part.content === 'string') {
+          content = part.content
+          if (typeof part.mimeType === 'string') mimeType = part.mimeType
+        }
+
+        if (content) {
+          attachments.push({ mimeType, content })
+        }
+      }
+    }
+  }
+
+  const hasAttachments = attachments.length > 0
+
+  if (!text && !hasAttachments && message.role !== 'tool') return null
 
   return (
     <div className={cn('flex gap-3 w-full', isUser && 'justify-end')}>
       {!isUser && (
-        <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 mt-1">
+        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
           <Bot size={16} className="text-white" />
         </div>
       )}
-      <div className={cn('flex flex-col gap-1 max-w-[70%]', isUser && 'items-end')}>
-        <div
-          className={cn(
-            'px-3 py-2.5 rounded-xl text-sm leading-relaxed',
-            isUser
-              ? 'bg-primary text-white rounded-br-sm'
-              : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-sm'
-          )}
-        >
-          {isUser ? (
-            <p className="whitespace-pre-wrap">{text}</p>
-          ) : (
-            <div className="markdown-content">
-              <ReactMarkdown>{text}</ReactMarkdown>
-            </div>
-          )}
-        </div>
+      <div className={cn('flex flex-col gap-1 min-w-0', CHAT_BUBBLE_MAX_WIDTH, isUser && 'items-end')}>
+        {hasAttachments && (
+          <div className="flex flex-wrap gap-2 justify-end mb-1">
+            {attachments.map((att, idx) => (
+              <div key={idx} className="relative rounded-lg border border-[var(--border-color)] overflow-hidden bg-[var(--bg-tertiary)] max-w-sm">
+                {att.mimeType?.startsWith('image/') ? (
+                  <img
+                    src={`data:${att.mimeType};base64,${att.content}`}
+                    alt={att.name || t('chat.attachment')}
+                    className="max-h-60 w-auto object-contain"
+                  />
+                ) : (
+                  <div className="flex items-center justify-center p-3 text-sm text-[var(--text-muted)] bg-[var(--bg-secondary)]">
+                    📎 {att.name || t('chat.attachment')}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {text && (
+          <div
+            className={cn(
+              'px-3 py-2.5 rounded-xl text-sm leading-relaxed break-words min-w-0',
+              isUser
+                ? 'rounded-br-sm border border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-primary)]'
+                : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-sm'
+            )}
+          >
+            {isUser ? (
+              <p className="whitespace-pre-wrap break-words">{text}</p>
+            ) : (
+              <div className="markdown-content">
+                <ReactMarkdown>{text}</ReactMarkdown>
+              </div>
+            )}
+          </div>
+        )}
         {message.ts && (
           <span className="text-[var(--text-muted)] text-xs px-1">{formatTime(message.ts)}</span>
         )}
       </div>
     </div>
   )
-}
+})
 
-// Streaming message
-function StreamingBubble({ segments }: { segments: StreamSegment[] }) {
-  const text = segments.map((s) => s.text).join('')
+const StreamingBubble = memo(function StreamingBubble({ segments }: { segments: StreamSegment[] }) {
+  const text = segments.map((segment) => segment.text).join('')
   if (!text) return null
+
   return (
     <div className="flex gap-3 w-full">
-      <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 mt-1">
+      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
         <Bot size={16} className="text-white" />
       </div>
-      <div className="flex flex-col gap-1 max-w-[70%]">
-        <div className="px-3 py-2.5 rounded-xl rounded-bl-sm bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm leading-relaxed">
+      <div className={cn('flex flex-col gap-1 min-w-0', CHAT_BUBBLE_MAX_WIDTH)}>
+        <div className="px-3 py-2.5 rounded-xl rounded-bl-sm bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm leading-relaxed break-words min-w-0">
           <div className="markdown-content">
             <ReactMarkdown>{text}</ReactMarkdown>
           </div>
-          <span className="inline-block w-1.5 h-4 bg-primary/80 animate-pulse ml-0.5 align-middle" />
+          <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse align-middle bg-[var(--primary)]" />
         </div>
       </div>
     </div>
   )
-}
+})
 
 type ChatPageProps = {
   sessions: Session[]
@@ -352,7 +403,7 @@ type ChatPageProps = {
     error: string | null
   }
   onSelectSession: (key: string) => void
-  onSendMessage: (text: string) => void
+  onSendMessage: (text: string, attachments?: Array<{ mimeType: string; content: string; name?: string }>) => void
   onAbort: () => void
   onNewSession: (agentKey?: string) => void
 }
@@ -367,32 +418,38 @@ export function ChatPage({
   onAbort,
   onNewSession,
 }: ChatPageProps) {
+  const { t } = useI18n()
   const [draft, setDraft] = useState('')
   const [showAgentDropdown, setShowAgentDropdown] = useState(false)
+  const [attachments, setAttachments] = useState<Array<{ file: File; previewUrl: string }>>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const activeSession = sessions.find((s) => s.key === activeSessionKey)
+  const activeSession = sessions.find((session) => session.key === activeSessionKey)
   const isBusy = chatState.sending || Boolean(chatState.runId)
 
-  // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatState.messages, chatState.streamSegments])
 
-  // Auto-resize textarea
   useEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+    const element = textareaRef.current
+    if (!element) return
+    element.style.height = 'auto'
+    element.style.height = `${Math.min(element.scrollHeight, 200)}px`
   }, [draft])
 
-  // Close dropdown on outside click
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+    return () => {
+      attachments.forEach((attachment) => URL.revokeObjectURL(attachment.previewUrl))
+    }
+  }, [attachments])
+
+  useEffect(() => {
+    const handler = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setShowAgentDropdown(false)
       }
     }
@@ -400,20 +457,90 @@ export function ChatPage({
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  const handleSend = useCallback(() => {
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files.length > 0) {
+      const newFiles = Array.from(event.target.files)
+      const newAttachments = newFiles.map((file) => ({
+        file,
+        previewUrl: URL.createObjectURL(file),
+      }))
+      setAttachments((prev) => [...prev, ...newAttachments])
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const removeAttachment = (index: number) => {
+    setAttachments((prev) => {
+      const next = [...prev]
+      URL.revokeObjectURL(next[index].previewUrl)
+      next.splice(index, 1)
+      return next
+    })
+  }
+
+  const handleSend = useCallback(async () => {
     const text = draft.trim()
-    if (!text || isBusy) return
-    onSendMessage(text)
+    if ((!text && attachments.length === 0) || isBusy) return
+
+    let processedAttachments = undefined
+    if (attachments.length > 0) {
+      processedAttachments = await Promise.all(
+        attachments.map((attachment) => (
+          new Promise<{ mimeType: string; content: string; name?: string }>((resolve, reject) => {
+            const reader = new FileReader()
+            reader.onload = () => {
+              const result = reader.result as string
+              resolve({
+                mimeType: attachment.file.type,
+                content: result.split(',')[1],
+                name: attachment.file.name,
+              })
+            }
+            reader.onerror = reject
+            reader.readAsDataURL(attachment.file)
+          })
+        ))
+      )
+    }
+
+    onSendMessage(text, processedAttachments)
     setDraft('')
+    setAttachments([])
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [draft, isBusy, onSendMessage])
+  }, [attachments, draft, isBusy, onSendMessage])
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void handleSend()
+    }
+  }
+
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = event.clipboardData?.items
+    if (!items) return
+
+    const newAttachments: Array<{ file: File; previewUrl: string }> = []
+
+    for (let index = 0; index < items.length; index += 1) {
+      if (items[index].type.indexOf('image') !== -1) {
+        const file = items[index].getAsFile()
+        if (file) {
+          if (newAttachments.length === 0) event.preventDefault()
+          newAttachments.push({
+            file,
+            previewUrl: URL.createObjectURL(file),
+          })
+        }
+      }
+    }
+
+    if (newAttachments.length > 0) {
+      setAttachments((prev) => [...prev, ...newAttachments])
     }
   }
 
@@ -421,30 +548,27 @@ export function ChatPage({
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* Chat Sidebar */}
-      <div className="flex flex-col w-80 h-full bg-[var(--bg-secondary)] p-5 gap-4 shrink-0 border-r border-[var(--border-color)]">
-        {/* Header */}
+      <div className={cn('flex flex-col h-full bg-[var(--bg-secondary)] p-5 gap-4 shrink-0 border-r border-[var(--border-color)]', CHAT_SIDEBAR_WIDTH)}>
         <div className="flex flex-col gap-0">
           <div className="flex items-center justify-between h-10">
-            <span className="text-[var(--text-primary)] text-lg font-semibold">聊天</span>
+            <span className="text-[var(--text-primary)] text-lg font-semibold">{t('chat.title')}</span>
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setShowAgentDropdown(!showAgentDropdown)}
-                className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center hover:bg-primary/90 transition-colors"
-                title="新建对话"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)] transition-colors hover:bg-[var(--primary-hover)]"
+                title={t('chat.newSession')}
               >
-                <Plus size={18} className="text-white" />
+                <Plus size={18} className="text-[var(--action-foreground)]" />
               </button>
 
-              {/* Agent dropdown */}
               {showAgentDropdown && (
                 <div className="absolute top-10 left-0 z-50 w-72 bg-[var(--bg-primary)] border border-[var(--border-color)] rounded-xl p-1 shadow-xl animate-fade-in">
                   <div className="px-3 py-1.5">
-                    <span className="text-[var(--text-muted)] text-xs font-medium uppercase tracking-wider">选择代理</span>
+                    <span className="text-[var(--text-muted)] text-xs font-medium uppercase tracking-wider">{t('chat.selectAgent')}</span>
                   </div>
                   {agents.length === 0 ? (
                     <div className="px-3 py-4 text-center text-[var(--text-muted)] text-sm">
-                      暂无可用代理
+                      {t('chat.noAgents')}
                     </div>
                   ) : (
                     agents.map((agent) => (
@@ -467,7 +591,7 @@ export function ChatPage({
                       className="flex items-center gap-3 px-3 py-2.5 rounded-lg w-full text-left hover:bg-[var(--bg-secondary)] transition-colors"
                     >
                       <Plus size={16} className="text-[var(--text-muted)]" />
-                      <span className="text-[var(--text-secondary)] text-sm">默认对话</span>
+                      <span className="text-[var(--text-secondary)] text-sm">{t('chat.defaultConversation')}</span>
                     </button>
                   </div>
                 </div>
@@ -475,21 +599,19 @@ export function ChatPage({
             </div>
           </div>
 
-          {/* Session list label */}
           <div className="flex items-center h-7">
-            <span className="text-[var(--text-secondary)] text-xs">会话列表</span>
+            <span className="text-[var(--text-secondary)] text-xs">{t('chat.sessionList')}</span>
           </div>
         </div>
 
-        {/* Session list */}
         <ScrollArea className="flex-1 -mx-1">
           <div className="flex flex-col gap-2 px-1">
             {sessions.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-12 gap-3">
                 <MessageCircle size={32} className="text-[var(--border-color)]" />
                 <p className="text-[var(--text-muted)] text-sm text-center">
-                  还没有对话<br />
-                  <span className="text-xs">点击 + 开始新对话</span>
+                  {t('chat.emptyTitle')}<br />
+                  <span className="text-xs">{t('chat.emptyHint')}</span>
                 </p>
               </div>
             ) : (
@@ -506,11 +628,9 @@ export function ChatPage({
         </ScrollArea>
       </div>
 
-      {/* Chat Main */}
       <div className="flex flex-col flex-1 h-full bg-[var(--bg-primary)] overflow-hidden">
         {activeSessionKey ? (
           <>
-            {/* Chat Header */}
             <div className="flex items-center h-[72px] px-8 border-b border-[var(--border-color)] shrink-0">
               <div className="flex items-center gap-3">
                 <div
@@ -521,21 +641,20 @@ export function ChatPage({
                 </div>
                 <div className="flex flex-col gap-0.5">
                   <span className="text-[var(--text-primary)] text-base font-semibold">
-                    {activeSession ? getSessionDisplayName(activeSession) : 'Chat'}
+                    {activeSession ? getSessionDisplayName(activeSession) : t('chat.fallbackTitle')}
                   </span>
-                  <span className={cn('text-xs', isBusy ? 'text-primary' : 'text-green-500')}>
-                    {isBusy ? '思考中...' : '在线'}
+                  <span className={cn('text-xs', isBusy ? 'text-[var(--primary)]' : 'text-green-500')}>
+                    {isBusy ? t('chat.status.thinking') : t('chat.status.online')}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Messages */}
             <ScrollArea className="flex-1 overflow-hidden">
               <div className="flex flex-col gap-3 p-8 pb-4">
                 {chatState.loading ? (
                   <div className="flex items-center justify-center py-12">
-                    <Loader2 size={24} className="text-primary animate-spin" />
+                    <Loader2 size={24} className="animate-spin text-[var(--primary)]" />
                   </div>
                 ) : !hasContent ? (
                   <div className="flex flex-col items-center justify-center py-16 gap-4">
@@ -547,24 +666,23 @@ export function ChatPage({
                     </div>
                     <div className="text-center">
                       <p className="text-[var(--text-primary)] font-medium">
-                        {activeSession ? getSessionDisplayName(activeSession) : '助手'}
+                        {activeSession ? getSessionDisplayName(activeSession) : t('chat.fallbackAssistant')}
                       </p>
-                      <p className="text-[var(--text-muted)] text-sm mt-1">有什么我可以帮助你的？</p>
+                      <p className="text-[var(--text-muted)] text-sm mt-1">{t('chat.welcomePrompt')}</p>
                     </div>
                   </div>
                 ) : (
                   <>
-                    {chatState.messages.map((msg, i) => (
-                      <MessageBubble key={msg.uuid ?? msg.id ?? i} message={msg} />
+                    {chatState.messages.map((message, index) => (
+                      <MessageBubble key={message.uuid ?? message.id ?? index} message={message} />
                     ))}
 
-                    {/* Tool calls */}
                     {chatState.toolCalls.length > 0 && (
                       <div className="flex gap-3">
-                        <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 mt-1">
+                        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
                           <Bot size={16} className="text-white" />
                         </div>
-                        <div className="flex flex-col gap-1 flex-1 max-w-[70%] bg-[var(--bg-tertiary)] rounded-xl rounded-bl-sm px-3 py-2">
+                        <div className={cn('flex flex-col gap-1 flex-1 min-w-0 bg-[var(--bg-tertiary)] rounded-xl rounded-bl-sm px-3 py-2', CHAT_BUBBLE_MAX_WIDTH)}>
                           {chatState.toolCalls.map((tool) => (
                             <ToolCallItem key={tool.id} tool={tool} />
                           ))}
@@ -572,14 +690,12 @@ export function ChatPage({
                       </div>
                     )}
 
-                    {/* Streaming */}
                     {chatState.streamSegments.length > 0 && (
                       <StreamingBubble segments={chatState.streamSegments} />
                     )}
                   </>
                 )}
 
-                {/* Error */}
                 {chatState.error && (
                   <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/20">
                     <AlertCircle size={14} className="text-red-400 shrink-0" />
@@ -591,61 +707,100 @@ export function ChatPage({
               </div>
             </ScrollArea>
 
-            {/* Input */}
-            <div className="flex items-end gap-3 px-8 py-4 border-t border-[var(--border-color)] shrink-0">
-              <div className="flex-1 flex items-end gap-2 bg-[var(--bg-tertiary)] rounded-xl px-4 py-2 min-h-12">
-                <textarea
-                  ref={textareaRef}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="输入消息... (Enter 发送, Shift+Enter 换行)"
-                  rows={1}
-                  className="flex-1 bg-transparent text-[var(--text-primary)] text-sm placeholder:text-[var(--text-muted)] resize-none focus:outline-none leading-relaxed py-1.5 max-h-48"
-                  disabled={isBusy}
-                />
-              </div>
-              {isBusy ? (
-                <button
-                  onClick={onAbort}
-                  className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-color)] flex items-center justify-center hover:bg-[var(--bg-secondary)] transition-colors shrink-0"
-                  title="停止"
-                >
-                  <Square size={16} className="text-[var(--text-secondary)]" />
-                </button>
-              ) : (
-                <button
-                  onClick={handleSend}
-                  disabled={!draft.trim()}
-                  className={cn(
-                    'w-12 h-12 rounded-xl flex items-center justify-center transition-colors shrink-0',
-                    draft.trim()
-                      ? 'bg-primary hover:bg-primary/90 text-white'
-                      : 'bg-[var(--bg-tertiary)] text-[var(--border-color)] cursor-not-allowed'
-                  )}
-                  title="发送"
-                >
-                  <Send size={18} />
-                </button>
+            <div className="flex flex-col gap-2 px-8 py-4 border-t border-[var(--border-color)] shrink-0">
+              {attachments.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {attachments.map((attachment, index) => (
+                    <div key={index} className="relative group w-16 h-16 rounded-lg border border-[var(--border-color)] overflow-hidden bg-[var(--bg-tertiary)]">
+                      {attachment.file.type.startsWith('image/') ? (
+                        <img src={attachment.previewUrl} alt={attachment.file.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-xs text-[var(--text-muted)] p-1 text-center break-words">
+                          {attachment.file.name}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => removeAttachment(index)}
+                        className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/50 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
+
+              <div className="flex items-end gap-3">
+                <div className="flex-1 flex items-end gap-2 bg-[var(--bg-tertiary)] rounded-xl px-4 py-2 min-h-12 relative">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    className="hidden"
+                    multiple
+                    accept="image/*"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mb-1 p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors shrink-0"
+                    title={t('chat.addImage')}
+                    disabled={isBusy}
+                  >
+                    <ImagePlus size={20} />
+                  </button>
+                  <textarea
+                    ref={textareaRef}
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    placeholder={t('chat.inputPlaceholder')}
+                    rows={1}
+                    className="flex-1 bg-transparent text-[var(--text-primary)] text-sm placeholder:text-[var(--text-muted)] resize-none focus:outline-none leading-relaxed py-1.5 max-h-48"
+                    disabled={isBusy}
+                  />
+                </div>
+                {isBusy ? (
+                  <button
+                    onClick={onAbort}
+                    className="w-12 h-12 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-color)] flex items-center justify-center hover:bg-[var(--bg-secondary)] transition-colors shrink-0"
+                    title={t('chat.stop')}
+                  >
+                    <Square size={16} className="text-[var(--text-secondary)]" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => void handleSend()}
+                    disabled={!draft.trim() && attachments.length === 0}
+                    className={cn(
+                      'w-12 h-12 rounded-xl flex items-center justify-center transition-colors shrink-0',
+                      (draft.trim() || attachments.length > 0)
+                        ? 'bg-[var(--primary)] text-[var(--action-foreground)] hover:bg-[var(--primary-hover)]'
+                        : 'bg-[var(--bg-tertiary)] text-[var(--border-color)] cursor-not-allowed'
+                    )}
+                    title={t('chat.send')}
+                  >
+                    <Send size={18} />
+                  </button>
+                )}
+              </div>
             </div>
           </>
         ) : (
-          /* Empty state */
           <div className="flex flex-col items-center justify-center h-full gap-6">
             <div className="w-20 h-20 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-color)] flex items-center justify-center">
               <MessageCircle size={36} className="text-[var(--border-color)]" />
             </div>
             <div className="text-center">
-              <p className="text-[var(--text-primary)] text-lg font-medium">选择一个对话</p>
-              <p className="text-[var(--text-muted)] text-sm mt-1">或点击 + 开始新对话</p>
+              <p className="text-[var(--text-primary)] text-lg font-medium">{t('chat.selectConversation')}</p>
+              <p className="text-[var(--text-muted)] text-sm mt-1">{t('chat.selectConversationHint')}</p>
             </div>
             <Button
               onClick={() => onNewSession()}
               className="gap-2"
             >
               <Plus size={16} />
-              新建对话
+              {t('chat.newSession')}
             </Button>
           </div>
         )}

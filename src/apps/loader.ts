@@ -2,12 +2,17 @@
  * HelloClaw App Loader
  *
  * Handles loading, unloading, and lifecycle management of apps.
+ * Supports app lifecycle: Remote -> Downloaded -> Instantiated -> Running
+ *
  * Inspired by Obsidian's plugin loading system.
  */
 
 import type {
   AppManifest,
   InstalledApp,
+  DownloadedApp,
+  AppInstance,
+  InstantiateConfig,
   LoadedApp,
   HelloClawApp,
   HelloClawSDKInterface,
@@ -21,6 +26,8 @@ import type {
   Attachment,
 } from './types'
 import { HelloClawSDKImpl } from './sdk'
+import { collectAppBootstrapFiles } from './bootstrap'
+import { loadRemoteAppSkills, parseAppSkillFile } from './skills'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -240,6 +247,161 @@ export class AppLoader {
   }
 
   /**
+   * Load an app instance
+   *
+   * This loads an instantiated app, setting up its Agent, Skills, and CronJobs.
+   */
+  async loadAppInstance(
+    appInstance: AppInstance,
+    downloadedApp: DownloadedApp,
+    files: Record<string, string>
+  ): Promise<LoadedApp> {
+    const instanceId = appInstance.id
+    const manifest = downloadedApp.manifest
+
+    // Check if already loaded
+    const existing = this.loadedApps.get(instanceId)
+    if (existing && existing.loadState === 'loaded') {
+      return existing
+    }
+
+    // Create loading state entry
+    const loadingApp: LoadedApp = {
+      id: instanceId,
+      manifest,
+      instance: null,
+      sdk: null,
+      loadState: 'loading',
+      appInstanceId: instanceId,
+    }
+    this.loadedApps.set(instanceId, loadingApp)
+
+    try {
+      // Get entry file content
+      const entryContent = files[manifest.entry]
+      if (!entryContent) {
+        throw new Error(`Entry file not found: ${manifest.entry}`)
+      }
+
+      // Create SDK instance with the instance ID
+      const sdk = new HelloClawSDKImpl(instanceId, manifest, files, this.globalCallbacks)
+
+      // Load app module
+      const AppClass = await this.loadAppModule(entryContent)
+
+      // Create app instance
+      const appClassInstance = new AppClass(sdk) as HelloClawApp
+
+      // Call onload lifecycle
+      await appClassInstance.onload()
+
+      // Setup Agent if configured (use instance-specific agent ID)
+      if (manifest.agent) {
+        await this.setupInstanceAgent(appInstance, manifest.agent, files)
+      }
+
+      // Update to loaded state
+      const loadedApp: LoadedApp = {
+        id: instanceId,
+        manifest,
+        instance: appClassInstance,
+        sdk,
+        loadState: 'loaded',
+        appInstanceId: instanceId,
+      }
+      this.loadedApps.set(instanceId, loadedApp)
+
+      console.log(`[AppLoader] App instance "${appInstance.displayName}" (${instanceId}) loaded successfully`)
+      return loadedApp
+    } catch (err) {
+      // Update to error state
+      const errorApp: LoadedApp = {
+        id: instanceId,
+        manifest,
+        instance: null,
+        sdk: null,
+        loadState: 'error',
+        error: err instanceof Error ? err.message : 'Failed to load app instance',
+        appInstanceId: instanceId,
+      }
+      this.loadedApps.set(instanceId, errorApp)
+
+      console.error(`[AppLoader] Failed to load app instance "${instanceId}":`, err)
+      return errorApp
+    }
+  }
+
+  /**
+   * Setup Agent for an app instance
+   *
+   * Creates Agent with instance-specific ID, installs Skills, and registers CronJobs.
+   */
+  private async setupInstanceAgent(
+    appInstance: AppInstance,
+    agentConfig: AgentConfig,
+    files: Record<string, string>
+  ): Promise<void> {
+    console.log(`[AppLoader] Setting up agent for instance: ${appInstance.displayName}`)
+
+    // Use the instance-specific agent ID
+    const instanceAgentId = appInstance.agentId
+
+    // 1. Collect OpenClaw bootstrap files from the app root
+    const bootstrapFiles = collectAppBootstrapFiles(files)
+    if (Object.keys(bootstrapFiles).length === 0) {
+      console.warn('[AppLoader] No OpenClaw bootstrap files found. Add SOUL.md and/or AGENTS.md to the app root.')
+    }
+
+    // 2. Create Agent with instance-specific ID (via global callback if available)
+    if (this.globalCallbacks.createAgent) {
+      try {
+        await this.globalCallbacks.createAgent({
+          id: instanceAgentId,
+          name: `${appInstance.displayName} Agent`,
+          bootstrapFiles,
+        })
+        console.log(`[AppLoader] Agent "${instanceAgentId}" created for instance "${appInstance.displayName}"`)
+      } catch (err) {
+        console.error(`[AppLoader] Failed to create agent:`, err)
+      }
+    }
+
+    // 3. Create Skills
+    if (this.globalCallbacks.createSkill) {
+      for (const skill of await this.collectSkills(files, agentConfig.skills)) {
+        try {
+          await this.globalCallbacks.createSkill(instanceAgentId, skill)
+          console.log(`[AppLoader] Skill "${skill.name || skill.slug}" created for agent "${instanceAgentId}"`)
+        } catch (err) {
+          console.error(`[AppLoader] Failed to create skill "${skill.slug}":`, err)
+        }
+      }
+    }
+
+    // 4. Create CronJobs
+    if (agentConfig.cronjobs && this.globalCallbacks.addCronJob) {
+      for (const cronPattern of agentConfig.cronjobs) {
+        const cronFiles = this.findMatchingFiles(files, cronPattern)
+        for (const cronPath of cronFiles) {
+          try {
+            const cronContent = files[cronPath]
+            const cronConfig = this.parseCronFile(cronContent)
+            if (cronConfig) {
+              await this.globalCallbacks.addCronJob({
+                ...cronConfig,
+                agentId: instanceAgentId,
+              })
+              console.log(`[AppLoader] CronJob "${cronConfig.name}" created for agent "${instanceAgentId}"`)
+            }
+          } catch (err) {
+            console.error(`[AppLoader] Failed to create cron job from ${cronPath}:`, err)
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Load app module from entry file content
    *
    * Uses Function constructor to create an isolated scope,
@@ -300,10 +462,10 @@ export class AppLoader {
   ): Promise<void> {
     console.log(`[AppLoader] Setting up agent: ${agentConfig.name}`)
 
-    // 1. Read system prompt
-    const systemPrompt = files[agentConfig.systemPrompt]
-    if (!systemPrompt) {
-      console.warn(`[AppLoader] System prompt file not found: ${agentConfig.systemPrompt}`)
+    // 1. Collect OpenClaw bootstrap files from the app root
+    const bootstrapFiles = collectAppBootstrapFiles(files)
+    if (Object.keys(bootstrapFiles).length === 0) {
+      console.warn('[AppLoader] No OpenClaw bootstrap files found. Add SOUL.md and/or AGENTS.md to the app root.')
     }
 
     // 2. Create Agent (via global callback if available)
@@ -312,7 +474,7 @@ export class AppLoader {
         await this.globalCallbacks.createAgent({
           id: agentConfig.id,
           name: agentConfig.name,
-          systemPrompt: systemPrompt || '',
+          bootstrapFiles,
         })
         console.log(`[AppLoader] Agent "${agentConfig.name}" created`)
       } catch (err) {
@@ -321,20 +483,13 @@ export class AppLoader {
     }
 
     // 3. Create Skills
-    if (agentConfig.skills && this.globalCallbacks.createSkill) {
-      for (const skillPattern of agentConfig.skills) {
-        const skillFiles = this.findMatchingFiles(files, skillPattern)
-        for (const skillPath of skillFiles) {
-          try {
-            const skillContent = files[skillPath]
-            const skill = this.parseSkillFile(skillContent)
-            if (skill) {
-              await this.globalCallbacks.createSkill(agentConfig.id, skill)
-              console.log(`[AppLoader] Skill "${skill.name}" created`)
-            }
-          } catch (err) {
-            console.error(`[AppLoader] Failed to create skill from ${skillPath}:`, err)
-          }
+    if (this.globalCallbacks.createSkill) {
+      for (const skill of await this.collectSkills(files, agentConfig.skills)) {
+        try {
+          await this.globalCallbacks.createSkill(agentConfig.id, skill)
+          console.log(`[AppLoader] Skill "${skill.name || skill.slug}" created`)
+        } catch (err) {
+          console.error(`[AppLoader] Failed to create skill "${skill.slug}":`, err)
         }
       }
     }
@@ -364,7 +519,7 @@ export class AppLoader {
 
   /**
    * Find files matching a glob pattern
-   * Supports simple patterns like "skills/*.md"
+   * Supports simple patterns like "skills/<skill>/SKILL.md"
    */
   private findMatchingFiles(files: Record<string, string>, pattern: string): string[] {
     // Convert glob pattern to regex
@@ -377,49 +532,27 @@ export class AppLoader {
     return Object.keys(files).filter((path) => regex.test(path))
   }
 
-  /**
-   * Parse skill file content
-   *
-   * Skill files use Markdown format with frontmatter:
-   * ```markdown
-   * ---
-   * name: Publish Article
-   * description: Publish article to platforms
-   * trigger: publish_article
-   * ---
-   *
-   * ## Description
-   * Detailed skill description...
-   * ```
-   */
-  private parseSkillFile(content: string): SkillConfig | null {
-    const frontmatterRegex = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/
-    const match = content.match(frontmatterRegex)
+  private async collectSkills(
+    files: Record<string, string>,
+    patterns?: string[]
+  ): Promise<SkillConfig[]> {
+    const skillMap = new Map<string, SkillConfig>()
 
-    if (!match) {
-      return null
-    }
-
-    const frontmatterStr = match[1]
-    const body = match[2].trim()
-
-    // Parse frontmatter
-    const frontmatter: Record<string, string> = {}
-    frontmatterStr.split('\n').forEach((line) => {
-      const colonIndex = line.indexOf(':')
-      if (colonIndex > 0) {
-        const key = line.slice(0, colonIndex).trim()
-        const value = line.slice(colonIndex + 1).trim()
-        frontmatter[key] = value
+    for (const pattern of patterns || []) {
+      const skillFiles = this.findMatchingFiles(files, pattern)
+      for (const skillPath of skillFiles) {
+        const skill = parseAppSkillFile(skillPath, files)
+        if (skill) {
+          skillMap.set(skill.slug, skill)
+        }
       }
-    })
-
-    return {
-      name: frontmatter.name || 'Unnamed Skill',
-      description: frontmatter.description || '',
-      trigger: frontmatter.trigger || '',
-      content: body,
     }
+
+    for (const remoteSkill of await loadRemoteAppSkills(files)) {
+      skillMap.set(remoteSkill.slug, remoteSkill)
+    }
+
+    return Array.from(skillMap.values())
   }
 
   /**

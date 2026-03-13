@@ -1,22 +1,22 @@
 {
   "id": "helloclaw-social-media",
-  "name": "自媒体助手",
-  "version": "1.0.0",
-  "description": "自媒体内容管理和发布助手，支持多平台内容发布、定时发布、数据分析等功能",
+  "name": "内容增长工作台",
+  "version": "2.0.0",
+  "description": "面向专业自媒体人的创作、分发与运营分析工作台，支持借助 OpenClaw 完成策划、发布和复盘。",
   "author": "HelloClaw Team",
   "minAppVersion": "1.0.0",
   "icon": "icon.svg",
   "category": "productivity",
+  "homepage": "https://helloclaw.app",
   "sidebar": {
     "show": true,
     "icon": "Share2",
-    "label": "自媒体"
+    "label": "增长工作台"
   },
   "agent": {
-    "id": "social-media-agent",
-    "name": "自媒体 Agent",
-    "systemPrompt": "prompts/system.md",
-    "skills": ["skills/*.md"],
+    "id": "social-media-ops-agent",
+    "name": "内容增长运营 Agent",
+    "skills": ["skills/*/SKILL.md"],
     "cronjobs": ["cronjobs/*.json"]
   },
   "entry": "main.js",

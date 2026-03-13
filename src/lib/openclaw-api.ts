@@ -18,6 +18,7 @@ export type ChatMessage = {
   inputTokens?: number
   outputTokens?: number
   thinkingTokens?: number
+  attachments?: Array<{ mimeType: string; content: string; name?: string }>
 }
 
 export type Session = {
@@ -329,6 +330,31 @@ export async function listAgents(client: GatewayClient): Promise<AgentsListResul
     agents: Array.isArray(res.agents) ? res.agents : [],
     defaultId: res.defaultId ?? null,
   }
+}
+
+// Create an agent via agents.create
+export async function createAgent(
+  client: GatewayClient,
+  agent: { name: string; workspace: string }
+): Promise<{ ok: boolean; agentId: string; name: string; workspace: string }> {
+  const res = await client.request<{ ok: boolean; agentId: string; name: string; workspace: string }>('agents.create', {
+    name: agent.name,
+    workspace: agent.workspace,
+  })
+  return res
+}
+
+// Delete an agent via agents.delete
+export async function deleteAgent(
+  client: GatewayClient,
+  agentId: string,
+  opts?: { deleteFiles?: boolean }
+): Promise<{ ok: true; agentId: string; removedBindings: number }> {
+  const res = await client.request<{ ok: true; agentId: string; removedBindings: number }>('agents.delete', {
+    agentId,
+    deleteFiles: opts?.deleteFiles ?? true,
+  })
+  return res
 }
 
 // List cron jobs
