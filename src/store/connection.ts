@@ -6,6 +6,7 @@ import {
   loadChatHistory,
   sendChatMessage,
   abortChatRun,
+  buildAgentSessionKey,
   listAgents,
   createAgent,
   deleteAgent,
@@ -47,6 +48,28 @@ function extractStreamText(message: unknown): string | null {
   }
   if (typeof m.content === 'string') return m.content
   return null
+}
+
+function getStreamOverlap(previousText: string, incomingText: string): number {
+  const maxOverlap = Math.min(previousText.length, incomingText.length)
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (previousText.slice(-size) === incomingText.slice(0, size)) {
+      return size
+    }
+  }
+  return 0
+}
+
+// OpenClaw servers may emit either token deltas or a cumulative snapshot on each event.
+function mergeStreamText(previousText: string, incomingText: string): string {
+  if (!previousText) return incomingText
+  if (!incomingText) return previousText
+  if (incomingText === previousText) return previousText
+  if (incomingText.startsWith(previousText)) return incomingText
+  if (previousText.startsWith(incomingText)) return previousText
+
+  const overlap = getStreamOverlap(previousText, incomingText)
+  return previousText + incomingText.slice(overlap)
 }
 
 export type ConnectionConfig = {
@@ -95,6 +118,7 @@ export type ToolCall = {
 }
 
 export type ChatState = {
+  sessionKey: string | null
   messages: ChatMessage[]
   stream: string | null
   streamSegments: StreamSegment[]
@@ -103,6 +127,11 @@ export type ChatState = {
   sending: boolean
   runId: string | null
   error: string | null
+}
+
+type ChatMessageListenerPayload = {
+  sessionKey: string
+  message: ChatMessage
 }
 
 export function useOpenClawConnection() {
@@ -115,6 +144,7 @@ export function useOpenClawConnection() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeSessionKey, setActiveSessionKey] = useState<string | null>(null)
   const [chatState, setChatState] = useState<ChatState>({
+    sessionKey: null,
     messages: [],
     stream: null,
     streamSegments: [],
@@ -126,31 +156,81 @@ export function useOpenClawConnection() {
   })
 
   const clientRef = useRef<GatewayClient | null>(null)
+  const activeSessionKeyRef = useRef<string | null>(null)
+  const streamTextBySessionRef = useRef<Map<string, string>>(new Map())
+  const chatMessageListenersRef = useRef<Set<(payload: ChatMessageListenerPayload) => void>>(new Set())
+
+  const notifyChatMessageListeners = useCallback((payload: ChatMessageListenerPayload) => {
+    chatMessageListenersRef.current.forEach((listener) => {
+      try {
+        listener(payload)
+      } catch (err) {
+        console.error('chat message listener failed:', err)
+      }
+    })
+  }, [])
 
   const handleEvent = useCallback((event: string, payload: unknown) => {
     if (event === 'chat') {
       const ev = payload as ChatEventPayload
+      const sessionKey = ev.sessionKey
+      const cachedStream = streamTextBySessionRef.current.get(sessionKey) ?? ''
+
+      if (ev.state === 'delta') {
+        const deltaText = extractStreamText(ev.message)
+        if (deltaText) {
+          streamTextBySessionRef.current.set(sessionKey, mergeStreamText(cachedStream, deltaText))
+        }
+      } else if (ev.state === 'final') {
+        const streamedText = cachedStream
+        const finalMsg = ev.message as ChatMessage | undefined
+        const message = finalMsg
+          ?? (streamedText.trim()
+            ? { role: 'assistant' as const, text: streamedText, ts: Date.now() }
+            : null)
+
+        streamTextBySessionRef.current.delete(sessionKey)
+
+        if (message) {
+          notifyChatMessageListeners({
+            sessionKey,
+            message,
+          })
+        }
+      } else if (ev.state === 'aborted' || ev.state === 'error') {
+        streamTextBySessionRef.current.delete(sessionKey)
+      }
+
+      if (ev.sessionKey !== activeSessionKeyRef.current) {
+        return
+      }
       if (ev.state === 'delta') {
         // Extract streaming text from message object (content[].text or .text)
         const deltaText = extractStreamText(ev.message)
         if (deltaText) {
-          setChatState((prev) => ({
-            ...prev,
-            // runId comes from the first delta event
-            runId: prev.runId ?? ev.runId ?? null,
-            sending: false,
-            stream: deltaText,
-            streamSegments: [
-              ...prev.streamSegments,
-              { id: generateId(), text: deltaText, ts: Date.now() },
-            ],
-          }))
+          setChatState((prev) => {
+            const previousText = prev.stream ?? prev.streamSegments.map((segment) => segment.text).join('')
+            const mergedText = mergeStreamText(previousText, deltaText)
+            const streamId = prev.streamSegments[0]?.id ?? generateId()
+
+            return {
+              ...prev,
+              sessionKey: ev.sessionKey,
+              // runId comes from the first delta event
+              runId: prev.runId ?? ev.runId ?? null,
+              sending: false,
+              stream: mergedText,
+              streamSegments: [
+                { id: streamId, text: mergedText, ts: Date.now() },
+              ],
+            }
+          })
         }
       } else if (ev.state === 'final') {
         // final message may be in ev.message, or fall back to accumulated stream
         setChatState((prev) => {
           const finalMsg = ev.message as ChatMessage | undefined
-          const streamedText = prev.streamSegments.map((s) => s.text).join('')
+          const streamedText = prev.stream ?? prev.streamSegments.map((s) => s.text).join('')
           const messages = finalMsg
             ? [...prev.messages, finalMsg]
             : streamedText.trim()
@@ -158,6 +238,7 @@ export function useOpenClawConnection() {
             : prev.messages
           return {
             ...prev,
+            sessionKey: ev.sessionKey,
             messages,
             stream: null,
             streamSegments: [],
@@ -169,6 +250,7 @@ export function useOpenClawConnection() {
       } else if (ev.state === 'aborted' || ev.state === 'error') {
           setChatState((prev) => ({
             ...prev,
+            sessionKey: ev.sessionKey,
             stream: null,
             streamSegments: [],
             runId: null,
@@ -178,11 +260,15 @@ export function useOpenClawConnection() {
       }
     } else if (event === 'tool') {
       const ev = payload as ToolEventPayload
+      if (ev.sessionKey !== activeSessionKeyRef.current) {
+        return
+      }
       setChatState((prev) => {
         const existing = prev.toolCalls.find((t) => t.toolUseId === ev.toolUseId)
         if (ev.state === 'start') {
           return {
             ...prev,
+            sessionKey: ev.sessionKey,
             toolCalls: [
               ...prev.toolCalls,
               {
@@ -197,6 +283,7 @@ export function useOpenClawConnection() {
         } else if (ev.state === 'end' && existing) {
           return {
             ...prev,
+            sessionKey: ev.sessionKey,
             toolCalls: prev.toolCalls.map((t) =>
               t.toolUseId === ev.toolUseId
                 ? { ...t, state: 'done', output: ev.output }
@@ -213,7 +300,7 @@ export function useOpenClawConnection() {
         setAgents(extractAgentsFromSnapshot(snap))
       }
     }
-  }, [])
+  }, [notifyChatMessageListeners])
 
   const connect = useCallback((cfg: ConnectionConfig) => {
     // Stop existing client
@@ -287,32 +374,67 @@ export function useOpenClawConnection() {
   const disconnect = useCallback(() => {
     clientRef.current?.stop()
     clientRef.current = null
+    activeSessionKeyRef.current = null
+    setActiveSessionKey(null)
+    setChatState({
+      sessionKey: null,
+      messages: [],
+      stream: null,
+      streamSegments: [],
+      toolCalls: [],
+      loading: false,
+      sending: false,
+      runId: null,
+      error: null,
+    })
     setState('disconnected')
     setHello(null)
   }, [])
 
   // Load chat history when session changes
   const selectSession = useCallback(async (sessionKey: string) => {
+    activeSessionKeyRef.current = sessionKey
     setActiveSessionKey(sessionKey)
     const client = clientRef.current
     if (!client?.connected) return
 
-    setChatState((prev) => ({ ...prev, loading: true, messages: [], error: null }))
+    setChatState({
+      sessionKey,
+      messages: [],
+      stream: null,
+      streamSegments: [],
+      toolCalls: [],
+      loading: true,
+      sending: false,
+      runId: null,
+      error: null,
+    })
     try {
       const { messages } = await loadChatHistory(client, sessionKey)
+      if (activeSessionKeyRef.current !== sessionKey) {
+        return
+      }
       setChatState((prev) => ({
         ...prev,
+        sessionKey,
         messages,
         loading: false,
         stream: null,
         streamSegments: [],
         toolCalls: [],
+        sending: false,
         runId: null,
       }))
     } catch (err) {
+      if (activeSessionKeyRef.current !== sessionKey) {
+        return
+      }
       setChatState((prev) => ({
         ...prev,
+        sessionKey,
         loading: false,
+        sending: false,
+        runId: null,
         error: String(err),
       }))
     }
@@ -321,6 +443,7 @@ export function useOpenClawConnection() {
   const sendMessage = useCallback(async (text: string, attachments?: Array<{ mimeType: string; content: string; name?: string }>) => {
     const client = clientRef.current
     if (!client?.connected || !activeSessionKey) return
+    const sessionKey = activeSessionKey
 
     const userMessage: ChatMessage = {
       role: 'user',
@@ -331,6 +454,7 @@ export function useOpenClawConnection() {
 
     setChatState((prev) => ({
       ...prev,
+      sessionKey,
       messages: [...prev.messages, userMessage],
       sending: true,
       error: null,
@@ -340,20 +464,56 @@ export function useOpenClawConnection() {
     }))
 
     try {
-      const runId = await sendChatMessage(client, activeSessionKey, text, attachments)
-      setChatState((prev) => ({ ...prev, runId }))
+      const runId = await sendChatMessage(client, sessionKey, text, attachments)
+      setChatState((prev) => (
+        prev.sessionKey === sessionKey
+          ? { ...prev, sessionKey, runId }
+          : prev
+      ))
       // Refresh sessions after sending so new sessions appear in the sidebar
       setTimeout(() => {
         listSessions(client, { activeMinutes: 1440 }).then(setSessions).catch(console.error)
       }, 1500)
     } catch (err) {
-      setChatState((prev) => ({
-        ...prev,
-        sending: false,
-        error: String(err),
-      }))
+      setChatState((prev) => (
+        prev.sessionKey === sessionKey
+          ? {
+              ...prev,
+              sessionKey,
+              sending: false,
+              error: String(err),
+            }
+          : prev
+      ))
     }
   }, [activeSessionKey])
+
+  const sendMessageToSession = useCallback(async (
+    sessionKey: string,
+    text: string,
+    attachments?: Array<{ mimeType: string; content: string; name?: string }>
+  ) => {
+    const client = clientRef.current
+    if (!client?.connected) {
+      throw new Error('Client not connected')
+    }
+    return await sendChatMessage(client, sessionKey, text, attachments)
+  }, [])
+
+  const sendMessageToAgent = useCallback(async (
+    agentId: string,
+    text: string,
+    attachments?: Array<{ mimeType: string; content: string; name?: string }>
+  ) => {
+    return await sendMessageToSession(buildAgentSessionKey(agentId), text, attachments)
+  }, [sendMessageToSession])
+
+  const onChatMessage = useCallback((callback: (payload: ChatMessageListenerPayload) => void) => {
+    chatMessageListenersRef.current.add(callback)
+    return () => {
+      chatMessageListenersRef.current.delete(callback)
+    }
+  }, [])
 
   const abortChat = useCallback(async () => {
     const client = clientRef.current
@@ -582,6 +742,9 @@ export function useOpenClawConnection() {
     disconnect,
     selectSession,
     sendMessage,
+    sendMessageToSession,
+    sendMessageToAgent,
+    onChatMessage,
     abortChat,
     newSession,
     refreshSessions,

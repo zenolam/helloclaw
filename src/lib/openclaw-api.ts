@@ -257,8 +257,27 @@ export async function sendChatMessage(
   const idempotencyKey = `${Date.now()}-${Math.random().toString(36).slice(2)}`
 
   const apiAttachments = attachments?.length
-    ? attachments.map((att) => ({ type: 'image', mimeType: att.mimeType, content: att.content }))
+    ? attachments.map((att) => ({
+        type: 'image' as const,
+        mimeType: att.mimeType,
+        content: att.content,
+        fileName: att.name,
+      }))
     : undefined
+
+  // Debug log for image attachments
+  if (apiAttachments?.length) {
+    console.log('[openclaw-api] Sending message with attachments:', {
+      count: apiAttachments.length,
+      attachments: apiAttachments.map(a => ({
+        type: a.type,
+        mimeType: a.mimeType,
+        fileName: a.fileName,
+        contentLength: a.content?.length ?? 0,
+        contentPreview: a.content?.slice(0, 50) ?? '',
+      })),
+    })
+  }
 
   await client.request('chat.send', {
     sessionKey,

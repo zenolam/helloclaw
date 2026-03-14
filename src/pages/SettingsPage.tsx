@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Cpu, Radio, Loader2, RefreshCw, MessageSquare, Send, MessageCircle, Globe } from 'lucide-react'
+import { Cpu, Radio, Loader2, RefreshCw, MessageSquare, Send, MessageCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import type { ConnectionConfig } from '@/store/connection'
 import type { ModelEntry, ChannelsStatusSnapshot, ChannelAccountSnapshot } from '@/lib/openclaw-api'
-import { SUPPORTED_LOCALES, type Locale, useI18n } from '@/i18n'
+import { useI18n } from '@/i18n'
 
-type SettingsSection = 'model' | 'channel' | 'language'
+type SettingsSection = 'model' | 'channel'
 
 const CHANNEL_COLORS: Record<string, string> = {
   slack: '#10b98120',
@@ -24,17 +23,16 @@ const CHANNEL_ICONS: Record<string, React.ReactNode> = {
   whatsapp: <MessageCircle size={18} className="text-[#25d366]" />,
   signal: <Radio size={18} className="text-[#3a76f0]" />,
   imessage: <MessageCircle size={18} className="text-[#34c759]" />,
-  web: <Globe size={18} className="text-[#6366f1]" />,
+  web: <Radio size={18} className="text-[#6366f1]" />,
 }
 
 type SettingsPageProps = {
-  config: ConnectionConfig | null
   fetchModels: () => Promise<ModelEntry[]>
   fetchChannels: () => Promise<ChannelsStatusSnapshot | null>
 }
 
-export function SettingsPage({ config, fetchModels, fetchChannels }: SettingsPageProps) {
-  const { locale, setLocale, t, formatDateTime } = useI18n()
+export function SettingsPage({ fetchModels, fetchChannels }: SettingsPageProps) {
+  const { t, formatDateTime } = useI18n()
   const [activeSection, setActiveSection] = useState<SettingsSection>('model')
   const [models, setModels] = useState<ModelEntry[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
@@ -80,7 +78,6 @@ export function SettingsPage({ config, fetchModels, fetchChannels }: SettingsPag
   const navItems: { id: SettingsSection; icon: React.ReactNode; label: string }[] = [
     { id: 'model', icon: <Cpu size={20} />, label: t('settings.nav.models') },
     { id: 'channel', icon: <Radio size={20} />, label: t('settings.nav.channels') },
-    { id: 'language', icon: <Globe size={20} />, label: t('settings.nav.language') },
   ]
 
   const channelList = channelsSnap
@@ -140,25 +137,6 @@ export function SettingsPage({ config, fetchModels, fetchChannels }: SettingsPag
                 {t('common.refresh')}
               </button>
             </div>
-
-            {config && (
-              <div className="flex flex-col gap-3 p-5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)]">
-                <h3 className="text-[var(--text-primary)] font-medium text-sm">{t('settings.connectionInfo.title')}</h3>
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[var(--text-secondary)] text-sm">{t('settings.connectionInfo.serverUrl')}</span>
-                    <span className="text-[var(--text-primary)] text-sm font-mono">{config.url}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[var(--text-secondary)] text-sm">{t('settings.connectionInfo.status')}</span>
-                    <span className="flex items-center gap-1.5 text-green-400 text-sm">
-                      <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                      {t('settings.connectionInfo.connected')}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
 
             {modelsLoading ? (
               <div className="flex items-center justify-center py-12">
@@ -311,54 +289,6 @@ export function SettingsPage({ config, fetchModels, fetchChannels }: SettingsPag
           </div>
         )}
 
-        {activeSection === 'language' && (
-          <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-2">
-              <h2 className="text-[var(--text-primary)] text-xl font-semibold">{t('settings.language.title')}</h2>
-              <p className="text-[var(--text-secondary)] text-sm">{t('settings.language.description')}</p>
-            </div>
-
-            <div className="p-5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)]">
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--text-secondary)] text-sm">{t('settings.language.current')}</span>
-                <span className="text-[var(--text-primary)] text-sm font-medium">{t(`locale.${locale}` as `locale.${Locale}`)}</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {SUPPORTED_LOCALES.map((item) => (
-                <button
-                  key={item}
-                  onClick={() => void setLocale(item)}
-                  className={cn(
-                    'flex flex-col items-start gap-2 p-5 rounded-xl border text-left transition-colors',
-                    locale === item
-                      ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
-                      : 'bg-[var(--bg-secondary)] border-[var(--border-color)] hover:border-[var(--primary)]'
-                  )}
-                >
-                  <span className={cn(
-                    'text-base font-semibold',
-                    locale === item ? 'text-white' : 'text-[var(--text-primary)]'
-                  )}>
-                    {t(`locale.${item}` as `locale.${Locale}`)}
-                  </span>
-                  <span className={cn(
-                    'text-sm',
-                    locale === item ? 'text-white/80' : 'text-[var(--text-secondary)]'
-                  )}>
-                    {t(`settings.language.option.${item}.description` as `settings.language.option.${Locale}.description`)}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <div className="p-5 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-color)]">
-              <h3 className="text-[var(--text-primary)] font-medium text-sm mb-2">{t('settings.language.extensible')}</h3>
-              <p className="text-[var(--text-secondary)] text-sm">{t('settings.language.extensibleDescription')}</p>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   )

@@ -11,7 +11,7 @@ import { AppCenterPage } from '@/pages/AppCenterPage'
 import { useOpenClawConnection } from '@/store/connection'
 import { useInstances } from '@/store/instances'
 import { useApps } from '@/apps/store'
-import type { BootstrapFiles, SkillConfig } from '@/apps/types'
+import type { BootstrapFiles, CreateSkillOptions, SkillConfig } from '@/apps/types'
 import { buildSkillWorkspacePath } from '@/apps/skills'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import type { AgentEntry } from '@/lib/openclaw-api'
@@ -31,6 +31,66 @@ function buildAgentWorkspacePath(agentId: string): string {
   }
 
   return `~/.openclaw/workspace-${normalizedId}`
+}
+
+function isElectronEnvironment(): boolean {
+  return typeof window !== 'undefined' && !!window.electronAPI
+}
+
+function isLikelyLocalOpenClawUrl(rawUrl?: string | null): boolean {
+  if (!rawUrl) {
+    return false
+  }
+
+  try {
+    const { hostname } = new URL(rawUrl)
+    const normalizedHostname = hostname.toLowerCase()
+    return normalizedHostname === 'localhost'
+      || normalizedHostname === '127.0.0.1'
+      || normalizedHostname === '0.0.0.0'
+      || normalizedHostname === '::1'
+      || normalizedHostname === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+function collectGatewayErrorMessages(err: unknown): string[] {
+  const candidates: string[] = []
+
+  if (err instanceof Error && err.message) {
+    candidates.push(err.message)
+  } else if (err != null) {
+    candidates.push(String(err))
+  }
+
+  if (err instanceof GatewayRequestError) {
+    if (typeof err.details === 'string') {
+      candidates.push(err.details)
+    } else if (err.details && typeof err.details === 'object') {
+      candidates.push(JSON.stringify(err.details))
+    }
+  }
+
+  return candidates.filter(Boolean)
+}
+
+function isUnsupportedWorkspaceSkillFileError(err: unknown): boolean {
+  return collectGatewayErrorMessages(err)
+    .map((message) => message.toLowerCase())
+    .some((message) => message.includes('unsupported file') && message.includes('skills/'))
+}
+
+function buildSkillWorkspaceFiles(skill: SkillConfig): Record<string, string> {
+  const files: Record<string, string> = {
+    [buildSkillWorkspacePath(skill.slug)]: skill.content,
+  }
+
+  for (const [relativePath, content] of Object.entries(skill.files ?? {})) {
+    files[buildSkillWorkspacePath(skill.slug, relativePath)] = content
+  }
+
+  return files
 }
 
 function isMissingAgentError(err: unknown): boolean {
@@ -108,9 +168,20 @@ export default function App() {
 
   // 当前活跃实例的连接
   const connection = useOpenClawConnection()
+  const activeOpenClawUrl = activeInstance?.config.url ?? connection.config?.url ?? null
 
   // 准备应用 SDK 所需的回调，将应用操作映射到 OpenClaw API
   const sdkCallbacks = useMemo(() => ({
+    sendMessageToSession: async (
+      sessionKey: string,
+      text: string,
+      attachments?: Array<{ mimeType: string; content: string; name?: string }>
+    ) => {
+      return await connection.sendMessageToSession(sessionKey, text, attachments)
+    },
+    onChatMessage: (callback: (payload: { sessionKey: string; message: unknown }) => void) => {
+      return connection.onChatMessage(callback)
+    },
     createAgent: async (config: { id: string; name: string; bootstrapFiles?: BootstrapFiles }) => {
       const createdAgent = await connection.createAgent({
         name: config.name,
@@ -141,28 +212,56 @@ export default function App() {
         console.warn(`[App] Agent "${agentId}" was already missing during instance cleanup`)
       }
     },
-    createSkill: async (agentId: string, skill: SkillConfig) => {
-      await retryOnMissingAgent(
-        () => connection.saveAgentFile(agentId, buildSkillWorkspacePath(skill.slug), skill.content)
-      )
+    createSkill: async (agentId: string, skill: SkillConfig, options?: CreateSkillOptions) => {
+      const skillFiles = buildSkillWorkspaceFiles(skill)
 
-      if (skill.files) {
-        for (const [relativePath, content] of Object.entries(skill.files)) {
+      try {
+        for (const [name, content] of Object.entries(skillFiles)) {
           await retryOnMissingAgent(
-            () => connection.saveAgentFile(agentId, buildSkillWorkspacePath(skill.slug, relativePath), content)
+            () => connection.saveAgentFile(agentId, name, content)
           )
         }
+        return
+      } catch (err) {
+        if (!isUnsupportedWorkspaceSkillFileError(err)) {
+          throw err
+        }
       }
+
+      if (!isElectronEnvironment() || !isLikelyLocalOpenClawUrl(activeOpenClawUrl) || !window.electronAPI) {
+        throw new Error(t('appStore.error.skillInstallRequiresLocalWorkspace'))
+      }
+
+      const workspace = options?.workspace?.trim() || buildAgentWorkspacePath(agentId)
+      await window.electronAPI.invoke('agentWorkspace:writeFiles', {
+        workspace,
+        files: skillFiles,
+      })
     },
     addCronJob: async (job: any) => {
       await retryOnMissingAgent(
         () => connection.createCronJob(job)
       )
     },
-  }), [connection.createAgent, connection.deleteAgent, connection.saveAgentFile, connection.createCronJob])
+  }), [
+    activeOpenClawUrl,
+    connection.createAgent,
+    connection.deleteAgent,
+    connection.onChatMessage,
+    connection.saveAgentFile,
+    connection.createCronJob,
+    connection.sendMessageToSession,
+    t,
+  ])
 
   // 应用中心状态
-  const { installedApps, appInstances, downloadedApps } = useApps(sdkCallbacks)
+  const {
+    installedApps,
+    appInstances,
+    downloadedApps,
+    loadInstance,
+    getLoadedApp,
+  } = useApps(sdkCallbacks)
 
   const {
     config,
@@ -276,7 +375,7 @@ export default function App() {
             downloadedApps={downloadedApps}
           />
 
-          <main className="flex min-h-0 flex-1 overflow-hidden">
+          <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
             {!isConnected ? (
               <ConnectDialog
                 onConnect={async (cfg) => {
@@ -341,7 +440,6 @@ export default function App() {
 
                 {activePage === 'settings' && (
                   <SettingsPage
-                    config={activeInstance?.config ?? config}
                     fetchModels={fetchModels}
                     fetchChannels={fetchChannels}
                   />
@@ -358,7 +456,8 @@ export default function App() {
                   <AppView
                     appId={activePage.instanceId}
                     onBack={() => setActivePage('appCenter')}
-                    sdkCallbacks={sdkCallbacks}
+                    loadInstance={loadInstance}
+                    getLoadedApp={getLoadedApp}
                   />
                 )}
               </>

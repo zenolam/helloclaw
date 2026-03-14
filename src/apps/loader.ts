@@ -18,6 +18,7 @@ import type {
   HelloClawSDKInterface,
   AgentConfig,
   SkillConfig,
+  CreateSkillOptions,
   CreateCronJobConfig,
   CreateAgentConfig,
   AgentInfo,
@@ -43,7 +44,7 @@ interface GlobalCallbacks {
   listAgents?: () => Promise<AgentInfo[]>
   getAgent?: (id: string) => Promise<AgentInfo | null>
   createAgent?: (config: CreateAgentConfig) => Promise<AgentInfo>
-  createSkill?: (agentId: string, skill: SkillConfig) => Promise<void>
+  createSkill?: (agentId: string, skill: SkillConfig, options?: CreateSkillOptions) => Promise<void>
   listCronJobs?: () => Promise<CronJobInfo[]>
   addCronJob?: (job: CreateCronJobConfig) => Promise<CronJobInfo>
   removeCronJob?: (id: string) => Promise<void>
@@ -411,33 +412,8 @@ export class AppLoader {
     // Import HelloClawApp base class
     const { HelloClawApp } = await import('./types')
 
-    // Create module factory
-    // This creates an isolated scope with access to helloclaw SDK and HelloClawApp
-    const moduleFactory = new Function(
-      'helloclaw',
-      'HelloClawApp',
-      `
-      const module = { exports: {} };
-      const exports = module.exports;
-
-      try {
-        ${entryContent}
-      } catch (err) {
-        console.error('Error executing app module:', err);
-        throw err;
-      }
-
-      // Support both CommonJS and ES module exports
-      return module.exports.default || module.exports;
-      `
-    )
-
     // Execute module factory to get the app class
-    const AppClass = moduleFactory(null, HelloClawApp)
-
-    if (typeof AppClass !== 'function') {
-      throw new Error('App must export a class as default export')
-    }
+    const AppClass = this.resolveAppClassExport(this.executeAppModule(entryContent, HelloClawApp), HelloClawApp)
 
     // Verify it extends HelloClawApp
     if (!(AppClass.prototype instanceof HelloClawApp)) {
@@ -445,6 +421,129 @@ export class AppLoader {
     }
 
     return AppClass as new (sdk: HelloClawSDKInterface) => HelloClawApp
+  }
+
+  private unwrapAppBundleIife(entryContent: string): string | null {
+    const trimmedContent = entryContent.trim()
+    const withoutStrictMode = trimmedContent.replace(/^["']use strict["'];?\s*/, '')
+    const iifePatterns = [
+      /^\(\(\)\s*=>\s*\{([\s\S]*)\}\)\(\);?$/,
+      /^\(\s*function\s*\(\)\s*\{([\s\S]*)\}\s*\)\(\);?$/,
+    ]
+
+    for (const pattern of iifePatterns) {
+      const match = withoutStrictMode.match(pattern)
+      if (match) {
+        return match[1]
+      }
+    }
+
+    return null
+  }
+
+  private executeAppModule(entryContent: string, HelloClawAppBase: typeof HelloClawApp): unknown {
+    const executionCandidates = [entryContent]
+    const unwrappedBundle = this.unwrapAppBundleIife(entryContent)
+    if (unwrappedBundle && unwrappedBundle !== entryContent) {
+      executionCandidates.push(unwrappedBundle)
+    }
+
+    let lastError: unknown = null
+
+    for (const candidateContent of executionCandidates) {
+      try {
+        const moduleFactory = new Function(
+          'helloclaw',
+          'HelloClawApp',
+          `
+          const module = { exports: {} };
+          const exports = module.exports;
+
+          try {
+            ${candidateContent}
+          } catch (err) {
+            console.error('Error executing app module:', err);
+            throw err;
+          }
+
+          return {
+            moduleExports: module.exports,
+            mainDefault: typeof main_default !== 'undefined' ? main_default : undefined,
+          };
+          `
+        )
+
+        const result = moduleFactory(null, HelloClawAppBase) as {
+          moduleExports?: unknown
+          mainDefault?: unknown
+        }
+        const resolved = result.mainDefault ?? result.moduleExports
+
+        if (
+          result.mainDefault !== undefined
+          || typeof resolved === 'function'
+          || (resolved && typeof resolved === 'object' && Object.keys(resolved as Record<string, unknown>).length > 0)
+        ) {
+          return resolved
+        }
+      } catch (err) {
+        lastError = err
+      }
+    }
+
+    if (lastError) {
+      throw lastError
+    }
+
+    return {}
+  }
+
+  private resolveAppClassExport(
+    moduleExports: unknown,
+    HelloClawAppBase: typeof HelloClawApp
+  ): new (sdk: HelloClawSDKInterface) => HelloClawApp {
+    const seen = new Set<unknown>()
+    const queue: unknown[] = [moduleExports]
+    let firstFunctionCandidate: (new (sdk: HelloClawSDKInterface) => HelloClawApp) | null = null
+
+    while (queue.length > 0) {
+      const candidate = queue.shift()
+      if (!candidate || seen.has(candidate)) {
+        continue
+      }
+      seen.add(candidate)
+
+      if (typeof candidate === 'function') {
+        const appCandidate = candidate as new (sdk: HelloClawSDKInterface) => HelloClawApp
+        if (!firstFunctionCandidate) {
+          firstFunctionCandidate = appCandidate
+        }
+
+        if (candidate.prototype instanceof HelloClawAppBase) {
+          return appCandidate
+        }
+      }
+
+      if (typeof candidate === 'object' || typeof candidate === 'function') {
+        const record = candidate as Record<string, unknown>
+
+        if ('default' in record) {
+          queue.unshift(record.default)
+        }
+
+        for (const [key, value] of Object.entries(record)) {
+          if (key !== 'default') {
+            queue.push(value)
+          }
+        }
+      }
+    }
+
+    if (firstFunctionCandidate) {
+      return firstFunctionCandidate
+    }
+
+    throw new Error('App must export a class as default export')
   }
 
   // ───────────────────────────────────────────────────────────────────────────

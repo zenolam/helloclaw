@@ -156,6 +156,72 @@ ipcMain.handle('settings:set', (_event, key: string, value: string) => {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value)
 })
 
+function resolveElectronAgentWorkspaceDir(rawWorkspace: string): string {
+  const trimmedWorkspace = rawWorkspace.trim()
+  if (!trimmedWorkspace) {
+    throw new Error('Agent workspace is required')
+  }
+
+  const homeDir = app.getPath('home')
+  const expandedWorkspace = trimmedWorkspace.replace(/^~(?=$|[\\/])/, homeDir)
+  const resolvedWorkspace = path.resolve(expandedWorkspace)
+  const openClawRoot = path.join(homeDir, '.openclaw')
+  const relativeToOpenClawRoot = path.relative(openClawRoot, resolvedWorkspace)
+
+  if (
+    relativeToOpenClawRoot.startsWith('..')
+    || path.isAbsolute(relativeToOpenClawRoot)
+    || !path.basename(resolvedWorkspace).startsWith('workspace')
+  ) {
+    throw new Error(`Unsupported agent workspace "${rawWorkspace}"`)
+  }
+
+  return resolvedWorkspace
+}
+
+function normalizeWorkspaceRelativePath(rawPath: string): string {
+  const normalizedPath = rawPath.replace(/\\/g, '/').replace(/^\.?\//, '').trim()
+
+  if (
+    !normalizedPath
+    || normalizedPath.startsWith('/')
+    || normalizedPath.split('/').some((segment) => !segment || segment === '..')
+  ) {
+    throw new Error(`Invalid workspace file path: ${rawPath}`)
+  }
+
+  return normalizedPath
+}
+
+ipcMain.handle('agentWorkspace:writeFiles', (_event, payload: {
+  workspace?: string
+  files?: Record<string, string>
+}) => {
+  const workspaceDir = resolveElectronAgentWorkspaceDir(payload.workspace ?? '')
+  const files = payload.files ?? {}
+
+  fs.mkdirSync(workspaceDir, { recursive: true })
+
+  for (const [relativePath, content] of Object.entries(files)) {
+    const normalizedRelativePath = normalizeWorkspaceRelativePath(relativePath)
+    const targetPath = path.resolve(workspaceDir, normalizedRelativePath)
+    const relativeToWorkspace = path.relative(workspaceDir, targetPath)
+
+    if (relativeToWorkspace.startsWith('..') || path.isAbsolute(relativeToWorkspace)) {
+      throw new Error(`Unsafe workspace file path: ${relativePath}`)
+    }
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+    fs.writeFileSync(targetPath, content, 'utf-8')
+  }
+
+  return {
+    ok: true,
+    workspace: workspaceDir,
+    count: Object.keys(files).length,
+  }
+})
+
 // ─── Apps IPC handlers ────────────────────────────────────────────────────────
 
 ipcMain.handle('apps:list', () => {
@@ -536,6 +602,13 @@ function createWindow() {
   if (VITE_DEV_SERVER_URL) {
     win.webContents.openDevTools()
   }
+
+  // Add keyboard shortcut to toggle DevTools (Cmd+Option+I on Mac, Ctrl+Shift+I on Windows/Linux)
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'I' && (input.meta || input.control) && input.alt) {
+      win?.webContents.toggleDevTools()
+    }
+  })
 
   // Log preload errors
   win.webContents.on('preload-error', (event, preloadPath, error) => {

@@ -14,6 +14,7 @@ import type {
   AgentsAPI,
   AgentInfo,
   CreateAgentConfig,
+  CreateSkillOptions,
   SkillConfig,
   CronAPI,
   CronJobInfo,
@@ -101,7 +102,7 @@ export class HelloClawSDKImpl extends EventEmitter<SDKEventMap> implements Hello
     listAgents?: () => Promise<AgentInfo[]>
     getAgent?: (id: string) => Promise<AgentInfo | null>
     createAgent?: (config: CreateAgentConfig) => Promise<AgentInfo>
-    createSkill?: (agentId: string, skill: SkillConfig) => Promise<void>
+    createSkill?: (agentId: string, skill: SkillConfig, options?: CreateSkillOptions) => Promise<void>
     listCronJobs?: () => Promise<CronJobInfo[]>
     addCronJob?: (job: CreateCronJobConfig) => Promise<CronJobInfo>
     removeCronJob?: (id: string) => Promise<void>
@@ -195,9 +196,13 @@ export class HelloClawSDKImpl extends EventEmitter<SDKEventMap> implements Hello
         throw new Error('Agent creation not available')
       },
 
-      createSkill: async (agentId: string, skill: SkillConfig): Promise<void> => {
+      createSkill: async (
+        agentId: string,
+        skill: SkillConfig,
+        options?: CreateSkillOptions
+      ): Promise<void> => {
         if (this.globalCallbacks.createSkill) {
-          return this.globalCallbacks.createSkill(agentId, skill)
+          return this.globalCallbacks.createSkill(agentId, skill, options)
         }
         throw new Error('Skill creation not available')
       },

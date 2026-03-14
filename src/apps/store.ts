@@ -679,6 +679,130 @@ function resolveManifestFromFiles(
   }
 }
 
+function resolveAppModuleExport(
+  moduleExports: unknown,
+  opts?: { requireHelloClawSubclass?: boolean; helloClawBase?: Function & { prototype: object } }
+): new (...args: any[]) => any {
+  const seen = new Set<unknown>()
+  const queue: unknown[] = [moduleExports]
+  let firstFunctionCandidate: (new (...args: any[]) => any) | null = null
+
+  while (queue.length > 0) {
+    const candidate = queue.shift()
+    if (!candidate || seen.has(candidate)) {
+      continue
+    }
+    seen.add(candidate)
+
+    if (typeof candidate === 'function') {
+      if (!firstFunctionCandidate) {
+        firstFunctionCandidate = candidate as new (...args: any[]) => any
+      }
+
+      if (
+        opts?.helloClawBase
+        && (!opts.requireHelloClawSubclass || candidate.prototype instanceof opts.helloClawBase)
+      ) {
+        return candidate as new (...args: any[]) => any
+      }
+    }
+
+    if (typeof candidate === 'object' || typeof candidate === 'function') {
+      const record = candidate as Record<string, unknown>
+
+      if ('default' in record) {
+        queue.unshift(record.default)
+      }
+
+      for (const [key, value] of Object.entries(record)) {
+        if (key !== 'default') {
+          queue.push(value)
+        }
+      }
+    }
+  }
+
+  if (!opts?.requireHelloClawSubclass && firstFunctionCandidate) {
+    return firstFunctionCandidate
+  }
+
+  throw new Error(translate('appStore.error.defaultExportRequired'))
+}
+
+function unwrapAppBundleIife(entryContent: string): string | null {
+  const trimmedContent = entryContent.trim()
+  const withoutStrictMode = trimmedContent.replace(/^["']use strict["'];?\s*/, '')
+  const iifePatterns = [
+    /^\(\(\)\s*=>\s*\{([\s\S]*)\}\)\(\);?$/,
+    /^\(\s*function\s*\(\)\s*\{([\s\S]*)\}\s*\)\(\);?$/,
+  ]
+
+  for (const pattern of iifePatterns) {
+    const match = withoutStrictMode.match(pattern)
+    if (match) {
+      return match[1]
+    }
+  }
+
+  return null
+}
+
+function executeAppModule(
+  entryContent: string,
+  sdk: unknown,
+  HelloClawApp: unknown
+): unknown {
+  const executionCandidates = [entryContent]
+  const unwrappedBundle = unwrapAppBundleIife(entryContent)
+  if (unwrappedBundle && unwrappedBundle !== entryContent) {
+    executionCandidates.push(unwrappedBundle)
+  }
+
+  let lastError: unknown = null
+
+  for (const candidateContent of executionCandidates) {
+    try {
+      const moduleFactory = new Function(
+        'helloclaw',
+        'HelloClawApp',
+        `
+        const module = { exports: {} };
+        const exports = module.exports;
+
+        ${candidateContent}
+
+        return {
+          moduleExports: module.exports,
+          mainDefault: typeof main_default !== 'undefined' ? main_default : undefined,
+        };
+        `
+      )
+
+      const result = moduleFactory(sdk, HelloClawApp) as {
+        moduleExports?: unknown
+        mainDefault?: unknown
+      }
+      const resolved = result.mainDefault ?? result.moduleExports
+
+      if (
+        result.mainDefault !== undefined
+        || typeof resolved === 'function'
+        || (resolved && typeof resolved === 'object' && Object.keys(resolved as Record<string, unknown>).length > 0)
+      ) {
+        return resolved
+      }
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  if (lastError) {
+    throw lastError
+  }
+
+  return {}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // useApps Hook
 // ─────────────────────────────────────────────────────────────────────────────
@@ -804,6 +928,44 @@ export function useApps(callbacks?: any): UseAppsResult {
     return Array.from(skillMap.values())
   }, [])
 
+  const buildSdkCallbacks = useCallback((options?: { agentId?: string }) => {
+    if (!callbacks) {
+      return undefined
+    }
+
+    const agentId = options?.agentId?.trim()
+    if (!agentId || !callbacks.sendMessageToSession || !callbacks.onChatMessage) {
+      return callbacks
+    }
+
+    const trackedSessionKeys = new Set<string>()
+
+    return {
+      ...callbacks,
+      sendMessage: async (
+        text: string,
+        attachments?: Array<{ mimeType: string; content: string; name?: string }>
+      ) => {
+        const sessionKey = `agent:${agentId}:app:${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+        trackedSessionKeys.add(sessionKey)
+        return await callbacks.sendMessageToSession(sessionKey, text, attachments)
+      },
+      onChatMessage: (callback: (message: unknown) => void) => {
+        return callbacks.onChatMessage((payload: { sessionKey: string; message: { role?: string } }) => {
+          if (!trackedSessionKeys.has(payload.sessionKey)) {
+            return
+          }
+
+          callback(payload.message)
+
+          if (payload.message?.role === 'assistant') {
+            trackedSessionKeys.delete(payload.sessionKey)
+          }
+        })
+      },
+    }
+  }, [callbacks])
+
   // Internal helper to setup/sync agent resources
   const setupAgentInternal = useCallback(async (
     instance: AppInstance,
@@ -825,6 +987,7 @@ export function useApps(callbacks?: any): UseAppsResult {
     // 1. Create Agent
     const MAX_AGENT_ID_ATTEMPTS = 20
     let createAgentError: unknown = null
+    let agentWorkspace: string | undefined
 
     for (let attempt = 0; attempt < MAX_AGENT_ID_ATTEMPTS; attempt += 1) {
       const candidateAgentId = buildAgentIdCandidate(instance.agentId, attempt)
@@ -837,14 +1000,20 @@ export function useApps(callbacks?: any): UseAppsResult {
             bootstrapFiles,
           }),
           `create agent "${candidateAgentId}"`
-        ) as { agentId?: string } | undefined
+        ) as { agentId?: string; workspace?: string } | undefined
 
         const resolvedAgentId = typeof createdAgent?.agentId === 'string'
           ? createdAgent.agentId.trim()
           : candidateAgentId
+        const resolvedWorkspace = typeof createdAgent?.workspace === 'string'
+          ? createdAgent.workspace.trim()
+          : ''
 
         if (resolvedAgentId && resolvedAgentId !== nextInstance.agentId) {
           nextInstance = { ...nextInstance, agentId: resolvedAgentId }
+        }
+        if (resolvedWorkspace) {
+          agentWorkspace = resolvedWorkspace
         }
 
         createAgentError = null
@@ -867,19 +1036,45 @@ export function useApps(callbacks?: any): UseAppsResult {
       throw new Error(translate('appStore.error.failedCreateAgent', { message: getErrorMessage(createAgentError) }))
     }
 
+    const cleanupCreatedAgent = async () => {
+      if (!callbacks?.deleteAgent) {
+        return
+      }
+
+      try {
+        await callbacks.deleteAgent(nextInstance.agentId)
+      } catch (err) {
+        if (!isMissingAgentError(err)) {
+          console.error(`[setupAgentInternal] Failed to clean up agent "${nextInstance.agentId}":`, err)
+        }
+      }
+    }
+
     // 2. Setup Skills
     if (callbacks.createSkill) {
-      const patterns = Array.isArray(agentConfig.skills) ? agentConfig.skills : agentConfig.skills ? [agentConfig.skills] : []
-      const skills = await collectManifestSkills(files, patterns)
-      for (const skill of skills) {
-        try {
-          await withTimeout(
-            callbacks.createSkill(nextInstance.agentId, skill),
-            `install skill "${skill.name || skill.slug}"`
-          )
-        } catch (err) {
-          console.error(`[setupAgentInternal] Failed to create skill "${skill.slug}":`, err)
+      try {
+        const patterns = Array.isArray(agentConfig.skills) ? agentConfig.skills : agentConfig.skills ? [agentConfig.skills] : []
+        const skills = await collectManifestSkills(files, patterns)
+        const skillErrors: string[] = []
+
+        for (const skill of skills) {
+          try {
+            await withTimeout(
+              callbacks.createSkill(nextInstance.agentId, skill, { workspace: agentWorkspace }),
+              `install skill "${skill.name || skill.slug}"`
+            )
+          } catch (err) {
+            console.error(`[setupAgentInternal] Failed to create skill "${skill.slug}":`, err)
+            skillErrors.push(`${skill.name || skill.slug}: ${getErrorMessage(err)}`)
+          }
         }
+
+        if (skillErrors.length > 0) {
+          throw new Error(translate('appStore.error.failedInstallSkills', { message: skillErrors.join('; ') }))
+        }
+      } catch (err) {
+        await cleanupCreatedAgent()
+        throw err
       }
     }
 
@@ -1270,7 +1465,12 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       // Create SDK instance
       const { HelloClawSDKImpl } = await import('./sdk')
-      const sdk = new HelloClawSDKImpl(instanceId, effectiveManifest, files)
+      const sdk = new HelloClawSDKImpl(
+        instanceId,
+        effectiveManifest,
+        files,
+        buildSdkCallbacks({ agentId: instance.agentId })
+      )
 
       // Inject app styles if defined
       if (effectiveManifest.style && files[effectiveManifest.style]) {
@@ -1286,22 +1486,10 @@ export function useApps(callbacks?: any): UseAppsResult {
       }
 
       // Load app module
-      const moduleFactory = new Function(
-        'helloclaw',
-        'HelloClawApp',
-        `
-        const module = { exports: {} };
-        const exports = module.exports;
-        ${entryContent}
-        return module.exports.default || module.exports;
-        `
+      const { HelloClawApp } = await import('./types')
+      const AppClass = resolveAppModuleExport(
+        executeAppModule(entryContent, sdk, HelloClawApp)
       )
-
-      const AppClass = moduleFactory(sdk, (await import('./types')).HelloClawApp)
-
-      if (typeof AppClass !== 'function') {
-        throw new Error(translate('appStore.error.defaultExportRequired'))
-      }
 
       // Create app instance
       const appInstance = new AppClass(sdk)
@@ -1336,7 +1524,7 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       return errorApp
     }
-  }, [storage, loadedApps, loadDownloadedAppFiles])
+  }, [buildSdkCallbacks, storage, loadedApps, loadDownloadedAppFiles])
 
   // Uninstall app
   const uninstall = useCallback(async (id: string): Promise<UninstallResult> => {
@@ -1411,27 +1599,15 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       // Create SDK instance
       const { HelloClawSDKImpl } = await import('./sdk')
-      const sdk = new HelloClawSDKImpl(id, installed.manifest, files)
+      const sdk = new HelloClawSDKImpl(id, installed.manifest, files, buildSdkCallbacks())
 
       // Load app module
       // In production, this would use a proper module loader
       // For now, we use Function constructor to create an isolated scope
-      const moduleFactory = new Function(
-        'helloclaw',
-        'HelloClawApp',
-        `
-        const module = { exports: {} };
-        const exports = module.exports;
-        ${entryContent}
-        return module.exports.default || module.exports;
-        `
+      const { HelloClawApp } = await import('./types')
+      const AppClass = resolveAppModuleExport(
+        executeAppModule(entryContent, sdk, HelloClawApp)
       )
-
-      const AppClass = moduleFactory(sdk, (await import('./types')).HelloClawApp)
-
-      if (typeof AppClass !== 'function') {
-        throw new Error(translate('appStore.error.defaultExportRequired'))
-      }
 
       // Create app instance
       const instance = new AppClass(sdk)
@@ -1464,7 +1640,7 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       return errorApp
     }
-  }, [installedApps, loadedApps])
+  }, [buildSdkCallbacks, installedApps, loadedApps])
 
   // Load local app
   const loadLocalApp = useCallback(async (localApp: LocalApp): Promise<LoadedApp | null> => {
@@ -1495,7 +1671,7 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       // Create SDK instance
       const { HelloClawSDKImpl } = await import('./sdk')
-      const sdk = new HelloClawSDKImpl(id, manifest, files)
+      const sdk = new HelloClawSDKImpl(id, manifest, files, buildSdkCallbacks())
 
       // Inject app styles if defined
       console.log(`[loadLocalApp] manifest.style: ${manifest.style}`)
@@ -1519,22 +1695,10 @@ export function useApps(callbacks?: any): UseAppsResult {
       }
 
       // Load app module
-      const moduleFactory = new Function(
-        'helloclaw',
-        'HelloClawApp',
-        `
-        const module = { exports: {} };
-        const exports = module.exports;
-        ${entryContent}
-        return module.exports.default || module.exports;
-        `
+      const { HelloClawApp } = await import('./types')
+      const AppClass = resolveAppModuleExport(
+        executeAppModule(entryContent, sdk, HelloClawApp)
       )
-
-      const AppClass = moduleFactory(sdk, (await import('./types')).HelloClawApp)
-
-      if (typeof AppClass !== 'function') {
-        throw new Error(translate('appStore.error.defaultExportRequired'))
-      }
 
       // Create app instance
       const instance = new AppClass(sdk)
@@ -1567,7 +1731,7 @@ export function useApps(callbacks?: any): UseAppsResult {
 
       return errorApp
     }
-  }, [loadedApps])
+  }, [buildSdkCallbacks, loadedApps])
 
   // Get app by ID
   const getApp = useCallback((id: string): InstalledApp | null => {

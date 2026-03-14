@@ -18,8 +18,8 @@ const AGENT_COLORS = [
   '#f59e0b', '#06b6d4', '#84cc16',
 ]
 
-const CHAT_SIDEBAR_WIDTH = 'w-[clamp(18rem,24vw,32rem)]'
-const CHAT_BUBBLE_MAX_WIDTH = 'max-w-[min(100%,72ch)] sm:max-w-[min(94%,76ch)] xl:max-w-[min(90%,84ch)]'
+const CHAT_SIDEBAR_WIDTH = 'w-[clamp(15rem,20vw,22rem)] min-w-[15rem] max-w-[22rem]'
+const CHAT_BUBBLE_MAX_WIDTH = 'max-w-[72ch] sm:max-w-[76ch] xl:max-w-[84ch]'
 
 function getAgentColor(key: string): string {
   let hash = 0
@@ -315,15 +315,26 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMe
   if (!text && !hasAttachments && message.role !== 'tool') return null
 
   return (
-    <div className={cn('flex gap-3 w-full', isUser && 'justify-end')}>
+    <div
+      className={cn(
+        'flex w-full gap-3',
+        isUser ? 'justify-end pr-3 sm:pr-4' : 'pr-2 sm:pr-3'
+      )}
+    >
       {!isUser && (
         <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
           <Bot size={16} className="text-white" />
         </div>
       )}
-      <div className={cn('flex flex-col gap-1 min-w-0', CHAT_BUBBLE_MAX_WIDTH, isUser && 'items-end')}>
+      <div
+        className={cn(
+          'flex min-w-0 flex-col gap-1',
+          CHAT_BUBBLE_MAX_WIDTH,
+          isUser && 'ml-auto items-end pl-4 sm:pl-6'
+        )}
+      >
         {hasAttachments && (
-          <div className="flex flex-wrap gap-2 justify-end mb-1">
+          <div className="mb-1 flex max-w-full flex-wrap justify-end gap-2 self-end">
             {attachments.map((att, idx) => (
               <div key={idx} className="relative rounded-lg border border-[var(--border-color)] overflow-hidden bg-[var(--bg-tertiary)] max-w-sm">
                 {att.mimeType?.startsWith('image/') ? (
@@ -344,16 +355,16 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMe
         {text && (
           <div
             className={cn(
-              'px-3 py-2.5 rounded-xl text-sm leading-relaxed break-words min-w-0',
+              'min-w-0 max-w-full overflow-hidden px-3 py-2.5 rounded-xl text-sm leading-relaxed',
               isUser
-                ? 'rounded-br-sm border border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-primary)]'
-                : 'bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-sm'
+                ? 'w-fit self-end rounded-br-sm border border-[var(--border-color)] bg-[var(--bg-secondary)] text-[var(--text-primary)]'
+                : 'w-full bg-[var(--bg-tertiary)] text-[var(--text-primary)] rounded-bl-sm'
             )}
           >
             {isUser ? (
-              <p className="whitespace-pre-wrap break-words">{text}</p>
+              <pre className="chat-message-text m-0 font-inherit whitespace-pre-wrap">{text}</pre>
             ) : (
-              <div className="markdown-content">
+              <div className="markdown-content chat-message-text">
                 <ReactMarkdown>{text}</ReactMarkdown>
               </div>
             )}
@@ -376,9 +387,9 @@ const StreamingBubble = memo(function StreamingBubble({ segments }: { segments: 
       <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
         <Bot size={16} className="text-white" />
       </div>
-      <div className={cn('flex flex-col gap-1 min-w-0', CHAT_BUBBLE_MAX_WIDTH)}>
-        <div className="px-3 py-2.5 rounded-xl rounded-bl-sm bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm leading-relaxed break-words min-w-0">
-          <div className="markdown-content">
+      <div className={cn('flex min-w-0 flex-col gap-1', CHAT_BUBBLE_MAX_WIDTH)}>
+        <div className="w-full min-w-0 max-w-full overflow-hidden px-3 py-2.5 rounded-xl rounded-bl-sm bg-[var(--bg-tertiary)] text-[var(--text-primary)] text-sm leading-relaxed">
+          <div className="markdown-content chat-message-text">
             <ReactMarkdown>{text}</ReactMarkdown>
           </div>
           <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse align-middle bg-[var(--primary)]" />
@@ -393,6 +404,7 @@ type ChatPageProps = {
   agents: AgentEntry[]
   activeSessionKey: string | null
   chatState: {
+    sessionKey?: string | null
     messages: ChatMessage[]
     stream: string | null
     streamSegments: StreamSegment[]
@@ -428,7 +440,11 @@ export function ChatPage({
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const activeSession = sessions.find((session) => session.key === activeSessionKey)
-  const isBusy = chatState.sending || Boolean(chatState.runId)
+  const isBusy = Boolean(
+    activeSessionKey
+    && chatState.sessionKey === activeSessionKey
+    && (chatState.sending || chatState.runId)
+  )
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -547,7 +563,7 @@ export function ChatPage({
   const hasContent = chatState.messages.length > 0 || chatState.streamSegments.length > 0
 
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex min-w-0 h-full w-full overflow-hidden">
       <div className={cn('flex flex-col h-full bg-[var(--bg-secondary)] p-5 gap-4 shrink-0 border-r border-[var(--border-color)]', CHAT_SIDEBAR_WIDTH)}>
         <div className="flex flex-col gap-0">
           <div className="flex items-center justify-between h-10">
@@ -628,10 +644,10 @@ export function ChatPage({
         </ScrollArea>
       </div>
 
-      <div className="flex flex-col flex-1 h-full bg-[var(--bg-primary)] overflow-hidden">
+      <div className="flex min-w-0 flex-col flex-1 h-full bg-[var(--bg-primary)] overflow-hidden">
         {activeSessionKey ? (
           <>
-            <div className="flex items-center h-[72px] px-8 border-b border-[var(--border-color)] shrink-0">
+            <div className="flex items-center h-[72px] px-4 sm:px-6 lg:px-8 border-b border-[var(--border-color)] shrink-0">
               <div className="flex items-center gap-3">
                 <div
                   className="w-10 h-10 rounded-full flex items-center justify-center"
@@ -650,8 +666,8 @@ export function ChatPage({
               </div>
             </div>
 
-            <ScrollArea className="flex-1 overflow-hidden">
-              <div className="flex flex-col gap-3 p-8 pb-4">
+            <ScrollArea className="min-w-0 flex-1 overflow-hidden">
+              <div className="flex min-w-0 flex-col gap-3 pl-4 pr-6 py-6 pb-4 sm:pl-6 sm:pr-8 lg:pl-8 lg:pr-10">
                 {chatState.loading ? (
                   <div className="flex items-center justify-center py-12">
                     <Loader2 size={24} className="animate-spin text-[var(--primary)]" />
@@ -682,7 +698,7 @@ export function ChatPage({
                         <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--primary)]">
                           <Bot size={16} className="text-white" />
                         </div>
-                        <div className={cn('flex flex-col gap-1 flex-1 min-w-0 bg-[var(--bg-tertiary)] rounded-xl rounded-bl-sm px-3 py-2', CHAT_BUBBLE_MAX_WIDTH)}>
+                        <div className={cn('flex w-full min-w-0 flex-col gap-1 bg-[var(--bg-tertiary)] rounded-xl rounded-bl-sm px-3 py-2', CHAT_BUBBLE_MAX_WIDTH)}>
                           {chatState.toolCalls.map((tool) => (
                             <ToolCallItem key={tool.id} tool={tool} />
                           ))}
@@ -707,7 +723,7 @@ export function ChatPage({
               </div>
             </ScrollArea>
 
-            <div className="flex flex-col gap-2 px-8 py-4 border-t border-[var(--border-color)] shrink-0">
+            <div className="flex flex-col gap-2 px-4 py-4 sm:px-6 lg:px-8 border-t border-[var(--border-color)] shrink-0">
               {attachments.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {attachments.map((attachment, index) => (

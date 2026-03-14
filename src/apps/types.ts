@@ -6,6 +6,65 @@
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
+// i18n Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Localized string type for i18n support
+ *
+ * Can be a simple string (used as default) or an object with locale keys.
+ *
+ * @example
+ * // Simple string (backward compatible)
+ * name: "My App"
+ *
+ * @example
+ * // With i18n support
+ * name: {
+ *   default: "My App",
+ *   "zh-CN": "我的应用",
+ *   "zh-TW": "我的應用",
+ *   "ja": "マイアプリ"
+ * }
+ */
+export type LocalizedString = string | {
+  /** Default value when locale not matched */
+  default: string
+  /** Locale-specific values (e.g., "zh-CN", "en-US", "ja") */
+  [locale: string]: string | undefined
+}
+
+/**
+ * Resolve a localized string for a given locale
+ *
+ * Resolution order:
+ * 1. If string, return as-is
+ * 2. Try exact locale match (e.g., "zh-CN")
+ * 3. Try language prefix match (e.g., "zh" for "zh-CN")
+ * 4. Fallback to default
+ *
+ * @param value Localized string value
+ * @param locale Target locale (e.g., "zh-CN", "en-US")
+ * @returns Resolved string
+ */
+export function resolveLocalizedString(value: LocalizedString, locale: string): string {
+  if (typeof value === 'string') {
+    return value
+  }
+  // Try exact locale match (e.g., "zh-CN")
+  if (value[locale]) {
+    return value[locale] as string
+  }
+  // Try language prefix match (e.g., "zh" for "zh-CN")
+  const lang = locale.split('-')[0]
+  if (value[lang]) {
+    return value[lang] as string
+  }
+  // Fallback to default
+  return value.default
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Manifest Types
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -17,8 +76,8 @@ export interface SidebarConfig {
   show: boolean
   /** Lucide icon name */
   icon: string
-  /** Display label */
-  label: string
+  /** Display label (supports i18n) */
+  label: LocalizedString
 }
 
 /**
@@ -459,7 +518,7 @@ export interface AgentsAPI {
   /**
    * Create a skill for an agent
    */
-  createSkill(agentId: string, skill: SkillConfig): Promise<void>
+  createSkill(agentId: string, skill: SkillConfig, options?: CreateSkillOptions): Promise<void>
 }
 
 /**
@@ -497,6 +556,11 @@ export interface SkillConfig {
   content: string
   /** Additional files inside the skill directory */
   files?: Record<string, string>
+}
+
+export interface CreateSkillOptions {
+  /** Agent workspace path, when known by the caller */
+  workspace?: string
 }
 
 /**

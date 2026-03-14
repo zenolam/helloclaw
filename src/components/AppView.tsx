@@ -7,14 +7,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, AlertCircle, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useApps } from '@/apps/store'
 import type { LoadedApp } from '@/apps/types'
 import { useI18n } from '@/i18n'
 
 type AppViewProps = {
   appId: string
   onBack: () => void
-  sdkCallbacks?: any
+  loadInstance: (instanceId: string) => Promise<LoadedApp | null>
+  getLoadedApp: (id: string) => LoadedApp | null
 }
 
 function LoadingView() {
@@ -96,37 +96,30 @@ function AppSettingsView({ loadedApp, onBack }: AppSettingsViewProps) {
   )
 }
 
-export function AppView({ appId, onBack, sdkCallbacks }: AppViewProps) {
+export function AppView({ appId, onBack, loadInstance, getLoadedApp }: AppViewProps) {
   const { t } = useI18n()
-  const { loadInstance, getLoadedApp } = useApps(sdkCallbacks)
   const containerRef = useRef<HTMLDivElement>(null)
   const [showSettings, setShowSettings] = useState(false)
-  const [loadedApp, setLoadedApp] = useState<LoadedApp | null>(null)
+  const loadedApp = getLoadedApp(appId)
 
   useEffect(() => {
-    let mounted = true
-
     const load = async () => {
       const existing = getLoadedApp(appId)
-      if (existing && existing.loadState === 'loaded') {
-        if (mounted) setLoadedApp(existing)
+      if (existing) {
         return
       }
 
-      const result = await loadInstance(appId)
-      if (mounted && result) {
-        setLoadedApp(result)
-      }
+      await loadInstance(appId)
     }
 
     if (appId) {
       void load()
     }
-
-    return () => {
-      mounted = false
-    }
   }, [appId, getLoadedApp, loadInstance])
+
+  useEffect(() => {
+    setShowSettings(false)
+  }, [appId])
 
   useEffect(() => {
     if (
